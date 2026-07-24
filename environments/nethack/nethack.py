@@ -381,6 +381,11 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         state["_continual_lives_left"] = self.continual_lives if self.continual else 0
         state["spec"] = spec
         state["meta"] = meta
+        # Standard NLE tiers (full_nle etc.) paint the intro/copyright banner
+        # over the top tty rows on every step; the engine-driven CurriculumEnv
+        # does not, and owns its own map — so per-turn banner scrubbing is gated
+        # to the standard tiers only (see the render path in env_response).
+        state["_standard_tier"] = spec.nle_task != "engine"
         state["scout_tiles_seen"] = set()
         state["scout_delta"] = 0
         state["scout_reward_total"] = 0.0
@@ -1009,6 +1014,18 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
                 )
         else:
             state["consecutive_short_autoexplore"] = 0
+
+        # Re-scrub the intro/copyright banner before rendering. Each env.step
+        # re-carries the banner in the still-unexplored top tty rows, and in the
+        # right-offset-map standard tiers it is never repainted by gameplay — so
+        # the one-time scrub in setup_state is not enough: it must be reapplied
+        # to the freshly-stepped obs every turn or it bleeds into the rendered
+        # MAP (which reads the raw tty). Gated to standard tiers; defensive
+        # (never raises). Mutates raw_obs.tty_chars, then re-shape so the map
+        # view reflects the cleaned tty.
+        if state.get("_standard_tier", True):
+            _scrub_intro_banner(state["raw_obs"])
+            state["structured_obs"] = shape_observation(state["raw_obs"], state["character"])
 
         # Build the per-turn user message from the spec's turn template.
         obs_text = self.spec.turn_template(
