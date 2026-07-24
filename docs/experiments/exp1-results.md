@@ -128,7 +128,33 @@ encoding shapes *how* the agent tries to act, not just how deep it gets.
 
 ---
 
-## 4. Caveats (read before quoting)
+## 4. Verification (subagent, full corpus)
+
+All 64 rollouts (4 cells × 16) were verified against the A1–A16 contract by an independent
+subagent reading every trace + `results.jsonl`. **Verdict: trustworthy for publication.**
+
+| Cell | move exec | move emitted | banner hits | renders | max dlvl | degenerate loops |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| B0 | **0** | 232 | **0** | ASCII grid ✓ | 6 | 1 (search) |
+| JSON | **0** | 58 | **0** | structured ✓ | 3 | 1 (attack) |
+| TOON | **0** | 9 | **0** | compact ✓ | 3 | 2 (attack) |
+| IMG_TTY | **0** | 42 | **0** | 2019 valid tty PNGs (base64 to model) ✓ | 4 | 0 |
+
+Confirmed with evidence: `move` executed = 0 in every trace (gate airtight); no low-level
+`move`/dir8 in `tool_defs`; Valkyrie confirmed by the canonical starting kit every rollout;
+`example_id {0..15}` identical across all 4 cells (paired); 0 empty maps; 0 banner hits; 0
+auth/funds errors; **uncapped confirmed** — overall max dlvl = 6, `success_reward>0` in 0/64
+rollouts, and the dlvl-6 B0 rollout ran the full 150 turns. Degenerate loops: 4/64, low and
+roughly symmetric across cells (not an encoding-specific artifact). Sub-cap endings are
+genuine deaths, not silent voids.
+
+> Note on the `move` reject counts in §3.4: the saved `completion` history drops the `tool`
+> role and not every gate-rejection user-message is retained, so "rejections" **undercounts**
+> emissions. The authoritative gate evidence is **trace-level `move` executed = 0**, which
+> holds in all 64 rollouts. Use `move emitted` (232/58/9/42), not rejections, for the reach
+> asymmetry.
+
+## 5. Caveats (read before quoting)
 
 - **Flash-tier model.** These are Gemini 3 Flash numbers, for experimentation. The final
   table must be re-run on **Gemini 3 Pro** (resolve the exact Prime Pro id first). Absolute
