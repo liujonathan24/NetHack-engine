@@ -228,12 +228,18 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         setup_tune: Optional[dict] = None,
         setup_modify: Optional[dict] = None,
         setup_level_blob: Optional[str] = None,
+        # Pin the character (role-race-alignment-gender, e.g. "Val-hum-neu-fem")
+        # for every episode's engine reset. None = engine default (random roll).
+        # Threaded to NetHackCoreEnv.reset(character=...). Curriculum tiers own
+        # their own character and ignore this.
+        setup_character: Optional[str] = None,
         **kwargs,
     ):
         self.interface = interface
         self._setup_tune = setup_tune
         self._setup_modify = setup_modify
         self._setup_level_blob = setup_level_blob
+        self._setup_character = setup_character
         # Pluggable LM backends. Both default to None → the rollout-time code
         # falls back to the deterministic Offline* implementations. Swap in
         # prime-rl-backed clients by passing them here from load_environment.
@@ -361,7 +367,9 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         env.seed(core=seed, disp=seed)
         # NB: bootstrap_character() is currently a stub; once wired up it
         # auto-invokes #attributes and stores role/race/alignment in state.
-        obs, meta = env.reset()
+        # setup_character pins the role for standard tiers (e.g. full_nle);
+        # None keeps the engine default. Curriculum envs own their character.
+        obs, meta = env.reset(character=self._setup_character)
         from nethack_harness.tools.skills import bootstrap_character
         character = bootstrap_character(env)
 
@@ -1299,6 +1307,9 @@ def load_environment(
     tune: Optional[dict] = None,
     modify: Optional[dict] = None,
     level_blob: Optional[str] = None,
+    # Pin the character for standard tiers, e.g. "Val-hum-neu-fem". None =
+    # engine default (random roll). Ignored by curriculum tiers (own character).
+    character: Optional[str] = None,
     sub_lm=None,
     subgoal_proposer=None,
     compact_obs: bool = True,
@@ -1435,6 +1446,7 @@ def load_environment(
         setup_tune=tune,
         setup_modify=modify,
         setup_level_blob=level_blob,
+        setup_character=character,
         **kwargs,
     )
 
