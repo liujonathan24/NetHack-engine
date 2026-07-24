@@ -233,6 +233,14 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         # Threaded to NetHackCoreEnv.reset(character=...). Curriculum tiers own
         # their own character and ignore this.
         setup_character: Optional[str] = None,
+        # Names of the skills actually exposed to the model this rollout (the
+        # tool schema it was given). Tool calls for anything NOT in this set are
+        # rejected in env_response instead of being dispatched against the full
+        # registry — otherwise a hallucinated `move(direction=…)` executes even
+        # under the netplay set (which withholds it), leaking the low-level
+        # primitive into the effective action surface and confounding
+        # cross-encoding comparisons. None/empty disables the gate (back-compat).
+        allowed_skill_names: Optional[set] = None,
         **kwargs,
     ):
         self.interface = interface
@@ -240,6 +248,7 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         self._setup_modify = setup_modify
         self._setup_level_blob = setup_level_blob
         self._setup_character = setup_character
+        self._allowed_skill_names = set(allowed_skill_names or ())
         # Pluggable LM backends. Both default to None → the rollout-time code
         # falls back to the deterministic Offline* implementations. Swap in
         # prime-rl-backed clients by passing them here from load_environment.
@@ -566,6 +575,27 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
                 skill_args = {}
 
         env: NetHackCoreEnv = state["env"]
+
+        # Gate hallucinated tool calls: reject any skill the model was NOT given
+        # in its tool schema this rollout, instead of dispatching it against the
+        # full registry. Without this a model under the `netplay` set (which
+        # withholds low-level `move`) can still emit `move(direction=…)` and have
+        # it EXECUTE — leaking the primitive into the effective action surface and
+        # confounding "hold actions fixed, vary the observation" comparisons.
+        # Checked on the ORIGINAL name, before the dir8 rebind below (dir8's
+        # compass tools ARE in the exposed set). No NLE step is consumed.
+        if self._allowed_skill_names and skill_name not in self._allowed_skill_names:
+            avail = ", ".join(sorted(self._allowed_skill_names))
+            obs_text = self.spec.turn_template(
+                state["structured_obs"], state["journal"], state,
+                compact=self.compact_obs,
+                journal_max_chars=self.journal_render_max_chars,
+            )
+            content = compose_user_content(
+                obs_text,
+                [f"[Tool {skill_name!r} is not available. Call one of: {avail}]"],
+            )
+            return [vf.UserMessage(role="user", content=content)]
 
         # dir8 baseline: rewrite north/northeast/.../northwest calls to
         # move(direction=...) so the existing dispatcher handles them.
@@ -1435,6 +1465,9 @@ def load_environment(
         tool_callables = [_code_tool_adapter()]
     else:
         raise ValueError(f"Unknown interface={interface!r}; expected 'skill' or 'code'.")
+    # The exact set of tool names offered to the model — used to gate
+    # hallucinated tool calls in env_response (see allowed_skill_names).
+    _allowed_skill_names = {getattr(t, "__name__", "") for t in tool_callables} - {""}
 
     return NetHackVerifiersEnv(
         dataset=dataset,
@@ -1464,6 +1497,7 @@ def load_environment(
         setup_modify=modify,
         setup_level_blob=level_blob,
         setup_character=character,
+        allowed_skill_names=_allowed_skill_names,
         **kwargs,
     )
 
