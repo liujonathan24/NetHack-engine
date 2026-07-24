@@ -38,7 +38,9 @@ echo "[launch_cell] variant=${VARIANT} model=${MODEL} max_turns=${MAX_TURNS} out
 # NB: no `-p prime` — that overrides the registry and drops the X-Prime-Team-ID
 # billing header (personal balance is $0). Model resolves from the prime-team
 # endpoint in configs/endpoints.toml.
+# -c/--num-workers 3: five cells run concurrently in the fan-out, so keep
+# per-cell concurrency modest (5*3 = 15-way) to stay under Prime rate limits.
 exec .venv/bin/vf-eval nethack --env-dir-path environments \
   -m "${MODEL}" --endpoints-path configs/endpoints.toml \
-  -a "${ARGS}" -n 16 -r 1 --max-concurrent 4 --num-workers 4 \
+  -a "${ARGS}" -n 16 -r 1 --max-concurrent 3 --num-workers 3 \
   --max-tokens 2048 --save-results --output-dir "${OUTDIR}" --disable-tui
