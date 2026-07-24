@@ -35,7 +35,10 @@ JSON
 )
 
 echo "[launch_cell] variant=${VARIANT} model=${MODEL} max_turns=${MAX_TURNS} out=${OUTDIR}"
+# NB: no `-p prime` — that overrides the registry and drops the X-Prime-Team-ID
+# billing header (personal balance is $0). Model resolves from the prime-team
+# endpoint in configs/endpoints.toml.
 exec .venv/bin/vf-eval nethack --env-dir-path environments \
-  -m "${MODEL}" -p prime -k PI_API_KEY \
+  -m "${MODEL}" --endpoints-path configs/endpoints.toml \
   -a "${ARGS}" -n 16 -r 1 --max-concurrent 4 --num-workers 4 \
-  --max-tokens 2048 --save-results --output-dir "${OUTDIR}"
+  --max-tokens 2048 --save-results --output-dir "${OUTDIR}" --disable-tui
