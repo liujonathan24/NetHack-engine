@@ -24,13 +24,13 @@ Two new delivery variants landed on `exp/encoding-sweep`
   (`_bbox_template`, `skills.py:reveal`).
 
 Both new tools are info-only (empty `actions`, no NLE step) and are exposed
-through the **netplay** set (`helpers.py`, `elif skill_set == "netplay"`, now
+through an explicit comma-`skill_set` = the netplay tools **plus** `reveal,request_map` (these are deliberately NOT in the default netplay set, so
 includes `reveal`, `request_map`).
 
 ## The arms (`-a` JSON, drop into `vf-eval nethack -a '<...>'`)
 
 Shared spine (every arm): `"tier":"full_nle"`, `"interface":"skill"`,
-`"character":"Val-hum-neu-fem"`, `"skill_set":"netplay"`,
+`"character":"Val-hum-neu-fem"`, `"skill_set":"move_to,explore_and_descend,attack,throw,descend,search,pickup,engrave_elbereth,pray,eat,quaff,read,kick,add_note,recall,pin_objective,wiki_lookup,wiki_search,reveal,request_map"`,
 `"explicit_seeds":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]`. Model resolved from
 `configs/endpoints.toml` (prime-team block) with `-m google/gemini-3-flash-preview`
 — do **not** pass `-p prime` (that drops the `X-Prime-Team-ID` billing header).
@@ -43,20 +43,20 @@ map every turn) are the every-turn deliveries these arms are measured against.
 Full **ASCII** map only on material change or `request_map`; placeholder
 otherwise.
 ```json
-{"tier":"full_nle","variant":"DM","interface":"skill","character":"Val-hum-neu-fem","skill_set":"netplay","explicit_seeds":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}
+{"tier":"full_nle","variant":"DM","interface":"skill","character":"Val-hum-neu-fem","skill_set":"move_to,explore_and_descend,attack,throw,descend,search,pickup,engrave_elbereth,pray,eat,quaff,read,kick,add_note,recall,pin_objective,wiki_lookup,wiki_search,reveal,request_map","explicit_seeds":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}
 ```
 
 ### 2. delayed-map × JSON
 Full **JSON** map only on material change or `request_map`; placeholder
 otherwise.
 ```json
-{"tier":"full_nle","variant":"DM_JSON","interface":"skill","character":"Val-hum-neu-fem","skill_set":"netplay","explicit_seeds":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}
+{"tier":"full_nle","variant":"DM_JSON","interface":"skill","character":"Val-hum-neu-fem","skill_set":"move_to,explore_and_descend,attack,throw,descend,search,pickup,engrave_elbereth,pray,eat,quaff,read,kick,add_note,recall,pin_objective,wiki_lookup,wiki_search,reveal,request_map","explicit_seeds":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}
 ```
 
 ### 3. bounding-box on-demand
 Map hidden; only `reveal(x1,y1,x2,y2)` exposes a region (no game turn consumed).
 ```json
-{"tier":"full_nle","variant":"BBOX","interface":"skill","character":"Val-hum-neu-fem","skill_set":"netplay","explicit_seeds":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}
+{"tier":"full_nle","variant":"BBOX","interface":"skill","character":"Val-hum-neu-fem","skill_set":"move_to,explore_and_descend,attack,throw,descend,search,pickup,engrave_elbereth,pray,eat,quaff,read,kick,add_note,recall,pin_objective,wiki_lookup,wiki_search,reveal,request_map","explicit_seeds":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}
 ```
 
 ## In-process verification

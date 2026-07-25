@@ -33,9 +33,18 @@ def _text(resp):
     return content if isinstance(content, str) else json.dumps(content)
 
 
+# netplay tools + the 1d on-demand-map tools (reveal/request_map are NOT in the
+# default netplay set — they must be added explicitly for the 1d arms).
+_SKILL_SET_1D = (
+    "move_to,explore_and_descend,attack,throw,descend,search,pickup,"
+    "engrave_elbereth,pray,eat,quaff,read,kick,add_note,recall,pin_objective,"
+    "wiki_lookup,wiki_search,reveal,request_map"
+)
+
+
 async def _setup(variant):
     env = load_environment(
-        tier="full_nle", variant=variant, skill_set="netplay",
+        tier="full_nle", variant=variant, skill_set=_SKILL_SET_1D,
         compact_obs=False, max_turns=40, character="Val-hum-neu-fem",
         explicit_seeds=[0],
     )
