@@ -232,29 +232,34 @@ _BBOX_MAP_PLACEHOLDER = "=== MAP (hidden; call reveal(x1,y1,x2,y2) to view a reg
 
 
 def _delayed_map_fingerprint(structured, state):
-    """Cheap material-change signal for the delayed-map variants.
+    """Floor-level material-change signal for the delayed-map variants.
 
-    Any move or newly-seen tile changes ``structured.map_view`` (the @ position
-    and revealed glyphs are baked into it), so the map is re-sent; a no-op turn
-    (info-only skill, blocked action, in-place search that reveals nothing)
-    leaves it byte-identical and the map is elided. Also keyed on the dungeon
-    level so a stair transition always forces a refresh. Mirrors the
-    journal/inventory fingerprint pattern in rendering.py.
+    Decision (2026-07-24, 'new floor + on request only'): the FULL map is
+    auto-re-sent only when the **current dungeon level changes** (a new floor).
+    Within a floor the agent navigates on per-action feedback and calls
+    ``request_map`` to refresh on demand (``state['_force_map']``). We key on the
+    CURRENT dlvl (``blstats[12]`` — the same source the visited tracker uses),
+    not ``max_dlvl_reached`` (which never decreases, so it would miss ascents).
     """
+    dlvl = 1
     try:
-        map_view = getattr(structured, "map_view", "") or ""
+        if state is not None:
+            bl = getattr(state.get("raw_obs"), "blstats", None)
+            if bl is not None:
+                dlvl = int(bl[12])
+            else:
+                dlvl = int(state.get("max_dlvl_reached", 1))
     except Exception:
-        map_view = ""
-    dlvl = state.get("max_dlvl_reached", 1) if state is not None else 1
-    return (dlvl, hash(map_view))
+        dlvl = 1
+    return (dlvl,)
 
 
 def _delayed_map_template(base_fmt):
     """Delayed / on-demand map delivery (variants DM, DM_JSON).
 
-    The FULL map is re-sent only when it materially changed (dlvl or map
-    fingerprint) OR the agent forced a refresh via request_map/reveal
-    (``state['_force_map']``, set in env_response). Otherwise a one-line
+    The FULL map is re-sent only on a NEW FLOOR (current-dlvl change) OR when the
+    agent forced a refresh via request_map/reveal (``state['_force_map']``, set in
+    env_response). Same-floor moves do NOT re-send it. Otherwise a one-line
     placeholder stands in for the map block. Action feedback + status render
     unchanged every turn (they ride the caller's prefix_parts / the status
     block here), independent of whether the map is shown.
