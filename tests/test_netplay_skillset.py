@@ -5,7 +5,7 @@ from nethack_harness.helpers import _build_skill_adapter_callables
 
 NETPLAY_EXPECTED = {
     "move_to", "explore_and_descend",
-    "attack", "descend", "search", "pickup", "engrave_elbereth", "pray", "eat",
+    "attack", "throw", "descend", "search", "pickup", "engrave_elbereth", "pray", "eat",
     "quaff", "read", "kick", "add_note", "recall", "pin_objective",
     "wiki_lookup", "wiki_search",
 }

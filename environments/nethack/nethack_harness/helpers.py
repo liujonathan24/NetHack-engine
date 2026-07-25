@@ -854,6 +854,11 @@ def _build_skill_adapter_callables(skill_set: str = "full") -> list:
                 "attack", "throw", "descend", "search", "pickup", "engrave_elbereth", "pray",
                 "eat", "quaff", "read", "kick", "add_note", "recall",
                 "pin_objective", "wiki_lookup", "wiki_search"}
+        # NB: the 1d observation-delivery tools (reveal / request_map) are
+        # deliberately NOT in the default netplay set — adding them would change
+        # the fixed action surface for every netplay experiment (Exp 1, 1b, 1c)
+        # and confound the comparison. The 1d arms expose them via an explicit
+        # comma-`skill_set` (e.g. "<netplay tools>,reveal,request_map").
         out = []
         for name, schema in skill_registry.all_schemas().items():
             if name in _HARNESS_OWNED: continue

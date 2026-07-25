@@ -151,6 +151,28 @@ from nethack_harness.prompt.prompt_spec import (
 from nethack_harness.prompt.content import compose_user_content, content_to_text
 
 
+# Sub-experiment 1b: the per-cell SPATIAL/EXPLORATION attributes the JSON map
+# can be enriched with. Each maps to one compact RLE 0/1 mask layer.
+_VALID_CELL_ATTRS = frozenset({"seen", "visited", "reach"})
+
+
+def _normalize_cell_schema(cell_schema) -> set:
+    """Coerce a cell_schema arg to a validated set of attribute names.
+
+    Accepts None, a set/list/tuple, or a string (comma / whitespace / '+'
+    separated, so the vf-eval `-a` JSON args can pass e.g. "seen+visited").
+    Unknown tokens are dropped. Empty result = current JSON, unchanged.
+    """
+    if not cell_schema:
+        return set()
+    if isinstance(cell_schema, str):
+        import re
+        tokens = [t for t in re.split(r"[,\s+]+", cell_schema.strip()) if t]
+    else:
+        tokens = list(cell_schema)
+    return {t for t in (str(x).strip().lower() for x in tokens) if t in _VALID_CELL_ATTRS}
+
+
 class NetHackVerifiersEnv(vf.StatefulToolEnv):
     """
     Per-rollout state: a live NetHackCoreEnv plus character + cumulative scout count.
@@ -187,6 +209,14 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         # emits rich entity attrs + RLE grid; "minimal" trims to kind/coord/desc.
         # Threaded onto state["map_detail"] for the per-turn template to read.
         map_detail: str = "full",
+        # Sub-experiment 1b (JSON cell-content ablation): a collection of
+        # per-cell SPATIAL/EXPLORATION attributes to enrich the JSON map with.
+        # Drawn from {"seen","visited","reach"}; each enabled attr emits a
+        # compact RLE 0/1 mask layer (seen_grid / visited_grid / reach_grid).
+        # Accepts a set/list or a comma/space/+-separated string (so the
+        # vf-eval `-a` JSON args can pass it). Empty/None = current JSON,
+        # unchanged. Only consumed by variant="JSON"; ignored by TOON.
+        cell_schema=None,
         refine_interval: int = 20,
         # Variant R (CPP/GPP summarize-and-reset): when True, get_prompt_messages
         # hard-drops every user/assistant turn that landed before the most-recent
@@ -228,12 +258,36 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         setup_tune: Optional[dict] = None,
         setup_modify: Optional[dict] = None,
         setup_level_blob: Optional[str] = None,
+        # Pin the character (role-race-alignment-gender, e.g. "Val-hum-neu-fem")
+        # for every episode's engine reset. None = engine default (random roll).
+        # Threaded to NetHackCoreEnv.reset(character=...). Curriculum tiers own
+        # their own character and ignore this.
+        setup_character: Optional[str] = None,
+        # Names of the skills actually exposed to the model this rollout (the
+        # tool schema it was given). Tool calls for anything NOT in this set are
+        # rejected in env_response instead of being dispatched against the full
+        # registry — otherwise a hallucinated `move(direction=…)` executes even
+        # under the netplay set (which withholds it), leaking the low-level
+        # primitive into the effective action surface and confounding
+        # cross-encoding comparisons. None/empty disables the gate (back-compat).
+        allowed_skill_names: Optional[set] = None,
+        # Memory-ablation knob (sub-experiment 1c). When False, the tier
+        # description is NOT pre-pinned as the journal objective at setup, so a
+        # rollout with journal tools excluded and belief_state_interval=0 keeps
+        # the Journal empty → the "=== JOURNAL ===" block never renders. This
+        # is the only way to reach a truly no-memory arm: the objective pin at
+        # setup_state otherwise makes the journal non-empty on turn 1. Default
+        # True preserves the always-pinned-objective behavior.
+        pin_objective_on_setup: bool = True,
         **kwargs,
     ):
         self.interface = interface
+        self.pin_objective_on_setup = pin_objective_on_setup
         self._setup_tune = setup_tune
         self._setup_modify = setup_modify
         self._setup_level_blob = setup_level_blob
+        self._setup_character = setup_character
+        self._allowed_skill_names = set(allowed_skill_names or ())
         # Pluggable LM backends. Both default to None → the rollout-time code
         # falls back to the deterministic Offline* implementations. Swap in
         # prime-rl-backed clients by passing them here from load_environment.
@@ -250,6 +304,8 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         self.journal_render_max_chars = journal_render_max_chars
         self.variant = variant
         self.map_detail = map_detail
+        # Sub-experiment 1b: normalize the requested per-cell attribute set once.
+        self.cell_schema = _normalize_cell_schema(cell_schema)
         # Single predicate gating ALL refiner machinery (teacher construction,
         # separation guard, bootstrap I/O, edit capture, spec hooks). variant=="CH"
         # always implies the refiner; `refine=True` opts ANY other variant in.
@@ -361,7 +417,9 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         env.seed(core=seed, disp=seed)
         # NB: bootstrap_character() is currently a stub; once wired up it
         # auto-invokes #attributes and stores role/race/alignment in state.
-        obs, meta = env.reset()
+        # setup_character pins the role for standard tiers (e.g. full_nle);
+        # None keeps the engine default. Curriculum envs own their character.
+        obs, meta = env.reset(character=self._setup_character)
         from nethack_harness.tools.skills import bootstrap_character
         character = bootstrap_character(env)
 
@@ -373,6 +431,11 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         state["_continual_lives_left"] = self.continual_lives if self.continual else 0
         state["spec"] = spec
         state["meta"] = meta
+        # Standard NLE tiers (full_nle etc.) paint the intro/copyright banner
+        # over the top tty rows on every step; the engine-driven CurriculumEnv
+        # does not, and owns its own map — so per-turn banner scrubbing is gated
+        # to the standard tiers only (see the render path in env_response).
+        state["_standard_tier"] = spec.nle_task != "engine"
         state["scout_tiles_seen"] = set()
         state["scout_delta"] = 0
         state["scout_reward_total"] = 0.0
@@ -414,6 +477,21 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         except Exception:
             pass
         state["map_detail"] = self.map_detail
+        # Sub-experiment 1b: the requested per-cell attribute set (consumed by
+        # the JSON template) and the per-level visited-tile tracker. The tracker
+        # is depth -> set[(x, y)]; seed it with the hero's start tile so the
+        # visited_grid is non-empty on turn 1. We key by the hero's ACTUAL
+        # current depth (blstats[12]) — NOT max_dlvl_reached, which is updated
+        # only later in env_response (line ~940), so on a descent turn the tiles
+        # would file under the old level while the template reads the new one.
+        state["cell_schema"] = set(self.cell_schema)
+        state["_visited_tiles"] = {}
+        try:
+            _bl = state["raw_obs"].blstats
+            _hx, _hy = int(_bl[0]), int(_bl[1])
+            state["_visited_tiles"].setdefault(int(_bl[12]), set()).add((_hx, _hy))
+        except (KeyError, IndexError, TypeError, AttributeError):
+            pass
         # Track every (x, y) at which `>` was seen on the visible map. Needed
         # because once the player steps ONTO `>`, the @ overlay hides it and
         # extract_visible_features stops finding the tile — without memory,
@@ -457,7 +535,11 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         # goal stays in every obs (without forcing the model to call
         # pin_objective). For dynamic_subgoal, the proposer pin below
         # overrides this with the LM-proposed objective.
-        if spec is not None and getattr(spec, "description", None):
+        if (
+            self.pin_objective_on_setup
+            and spec is not None
+            and getattr(spec, "description", None)
+        ):
             state["journal"].pin_objective(spec.description)
         if self.sub_lm is not None:
             state["sub_lm"] = self.sub_lm  # used by belief-state distillation
@@ -554,6 +636,27 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
 
         env: NetHackCoreEnv = state["env"]
 
+        # Gate hallucinated tool calls: reject any skill the model was NOT given
+        # in its tool schema this rollout, instead of dispatching it against the
+        # full registry. Without this a model under the `netplay` set (which
+        # withholds low-level `move`) can still emit `move(direction=…)` and have
+        # it EXECUTE — leaking the primitive into the effective action surface and
+        # confounding "hold actions fixed, vary the observation" comparisons.
+        # Checked on the ORIGINAL name, before the dir8 rebind below (dir8's
+        # compass tools ARE in the exposed set). No NLE step is consumed.
+        if self._allowed_skill_names and skill_name not in self._allowed_skill_names:
+            avail = ", ".join(sorted(self._allowed_skill_names))
+            obs_text = self.spec.turn_template(
+                state["structured_obs"], state["journal"], state,
+                compact=self.compact_obs,
+                journal_max_chars=self.journal_render_max_chars,
+            )
+            content = compose_user_content(
+                obs_text,
+                [f"[Tool {skill_name!r} is not available. Call one of: {avail}]"],
+            )
+            return [vf.UserMessage(role="user", content=content)]
+
         # dir8 baseline: rewrite north/northeast/.../northwest calls to
         # move(direction=...) so the existing dispatcher handles them.
         _DIR_BIND = {
@@ -620,6 +723,14 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
                 skill_name, env, state["structured_obs"], **skill_args
             )
 
+        # Sub-experiment 1d (delayed-map / DM variants): request_map and reveal
+        # are info-only skills (empty actions) that force the FULL map back into
+        # this turn's rendered observation. Skills can't reach `state`, so the
+        # DM template's force flag is set here in env_response (which owns
+        # `state`); _delayed_map_template pops it. No NLE step is consumed.
+        if skill_name in ("request_map", "reveal"):
+            state["_force_map"] = True
+
         # Journal skills: apply the journal op and short-circuit the env step.
         # No NLE turn is consumed; the agent's next prompt reflects the change.
         if result.journal_op is not None:
@@ -678,6 +789,17 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
             for (x, y), ch in _iterate_visible_tiles(last_obs):
                 if ch not in (b" ", b"\x00"):
                     state["scout_tiles_seen"].add((state["max_dlvl_reached"], x, y))
+            # Sub-experiment 1b: record the hero's current tile into the per-level
+            # visited set (drives visited_grid). Keyed by the hero's ACTUAL depth
+            # (blstats[12]) so descent turns file under the level the template
+            # will read (max_dlvl_reached lags until later in env_response).
+            try:
+                _vb = last_obs.blstats
+                state["_visited_tiles"].setdefault(int(_vb[12]), set()).add(
+                    (int(_vb[0]), int(_vb[1]))
+                )
+            except (AttributeError, IndexError, TypeError, KeyError):
+                pass
             if terminated or truncated:
                 break
             # Status-aware halt: check after each step (cheap — just blstats).
@@ -1002,6 +1124,18 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         else:
             state["consecutive_short_autoexplore"] = 0
 
+        # Re-scrub the intro/copyright banner before rendering. Each env.step
+        # re-carries the banner in the still-unexplored top tty rows, and in the
+        # right-offset-map standard tiers it is never repainted by gameplay — so
+        # the one-time scrub in setup_state is not enough: it must be reapplied
+        # to the freshly-stepped obs every turn or it bleeds into the rendered
+        # MAP (which reads the raw tty). Gated to standard tiers; defensive
+        # (never raises). Mutates raw_obs.tty_chars, then re-shape so the map
+        # view reflects the cleaned tty.
+        if state.get("_standard_tier", True):
+            _scrub_intro_banner(state["raw_obs"])
+            state["structured_obs"] = shape_observation(state["raw_obs"], state["character"])
+
         # Build the per-turn user message from the spec's turn template.
         obs_text = self.spec.turn_template(
             state["structured_obs"], state["journal"], state,
@@ -1299,7 +1433,21 @@ def load_environment(
     tune: Optional[dict] = None,
     modify: Optional[dict] = None,
     level_blob: Optional[str] = None,
+    # Pin the character for standard tiers, e.g. "Val-hum-neu-fem". None =
+    # engine default (random roll). Ignored by curriculum tiers (own character).
+    character: Optional[str] = None,
     sub_lm=None,
+    # Sub-experiment 1c (memory ablation): build a real Prime-backed Sub-LM
+    # from a model id so belief-state distillation calls the model instead of
+    # the deterministic OfflineSubLM status-snapshot stub. Settable via the
+    # vf-eval `-a` string args (sub_lm is a Python object and cannot be). When
+    # set AND `sub_lm` is None, a PrimeSubLM(sub_lm_model) is constructed and
+    # passed as the env's sub_lm. None = unchanged (Offline/status-snapshot).
+    sub_lm_model: Optional[str] = None,
+    # When False, skip pre-pinning the tier description as the journal
+    # objective at setup → enables the no-memory arm (empty journal). See the
+    # env constructor for the full rationale.
+    pin_objective_on_setup: bool = True,
     subgoal_proposer=None,
     compact_obs: bool = True,
     history_keep_full: int = 5,
@@ -1307,6 +1455,12 @@ def load_environment(
     belief_state_interval: int = 25,
     journal_render_max_chars: int = 2000,
     variant: str = "B1",
+    # Sub-experiment 1b (JSON cell-content ablation): per-cell SPATIAL/
+    # EXPLORATION attributes to enrich the JSON map with, drawn from
+    # {"seen","visited","reach"}. Pass as a JSON list (["seen","visited"]) or a
+    # "seen+visited"-style string via the vf-eval `-a` args. Empty/None = base
+    # JSON, unchanged. Only affects variant="JSON".
+    cell_schema=None,
     refine_interval: int = 20,
     summarize_and_reset: bool = False,
     trace_dir: Optional[str] = None,
@@ -1407,6 +1561,17 @@ def load_environment(
         tool_callables = [_code_tool_adapter()]
     else:
         raise ValueError(f"Unknown interface={interface!r}; expected 'skill' or 'code'.")
+    # The exact set of tool names offered to the model — used to gate
+    # hallucinated tool calls in env_response (see allowed_skill_names).
+    _allowed_skill_names = {getattr(t, "__name__", "") for t in tool_callables} - {""}
+
+    # Sub-experiment 1c: when a sub_lm_model id is given (and no explicit
+    # sub_lm object was passed), build a real Prime-backed Sub-LM so
+    # belief-state distillation calls the model. `_maybe_belief_state_summary`
+    # uses it iff it is NOT an OfflineSubLM.
+    if sub_lm is None and sub_lm_model:
+        from nethack_harness.tools.code_mode import PrimeSubLM
+        sub_lm = PrimeSubLM(sub_lm_model)
 
     return NetHackVerifiersEnv(
         dataset=dataset,
@@ -1422,6 +1587,7 @@ def load_environment(
         belief_state_interval=belief_state_interval,
         journal_render_max_chars=journal_render_max_chars,
         variant=variant,
+        cell_schema=cell_schema,
         spec=spec,
         refine_interval=refine_interval,
         summarize_and_reset=summarize_and_reset,
@@ -1435,6 +1601,9 @@ def load_environment(
         setup_tune=tune,
         setup_modify=modify,
         setup_level_blob=level_blob,
+        setup_character=character,
+        allowed_skill_names=_allowed_skill_names,
+        pin_objective_on_setup=pin_objective_on_setup,
         **kwargs,
     )
 

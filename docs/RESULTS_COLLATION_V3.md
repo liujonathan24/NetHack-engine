@@ -53,6 +53,18 @@ different quantity. Every BALROG column stays empty. See §7.1.
 
 ## 2 · Experiment 1 — Observation encoding
 
+> **NEW — rigorous run (2026-07-24):** a fresh, verified encoding sweep now exists on a
+> different model and the *uncapped* tier: **Gemini 3 Flash via Prime, `full_nle` (uncapped),
+> pinned Valkyrie, seeds 0–15, n=16, no compaction, `move`-gated action surface.** Result:
+> **B0 2.00 ± 0.38 > IMG_TTY 1.88 > TOON 1.81 > JSON 1.44** — but **no pair is significant at
+> n=16** (paired sign-p ≥ 0.18); JSON is the consistent laggard, B0 owns the only dlvl 5–6
+> reaches and the lowest token cost. This run fixed three confounds the older numbers below
+> silently carried (Prime team-billing, per-turn intro-banner bleed, and a `move` tool-gating
+> leak that let the withheld primitive execute asymmetrically across encodings). Full write-up
+> + full-corpus verification: **`docs/experiments/exp1-results.md`**. The older
+> Qwen3-VL/`full_dungeon_easy` numbers below are retained for history but are censored at
+> dlvl 6 and pre-date the gate/banner fixes — prefer the new run.
+
 **Held fixed:** the `netplay` skill set (high-level actions, no low-level `move(direction)`;
 navigation via `explore_and_descend` / `move_to` / `search` / `kick` + survival skills),
 model `qwen/qwen3-vl-235b-a22b-instruct`, `max_turns=150`. **Only the observation varies.**
