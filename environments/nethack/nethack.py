@@ -479,14 +479,17 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         state["map_detail"] = self.map_detail
         # Sub-experiment 1b: the requested per-cell attribute set (consumed by
         # the JSON template) and the per-level visited-tile tracker. The tracker
-        # is dlvl -> set[(x, y)]; seed it with the hero's start tile so the
-        # visited_grid is non-empty on turn 1.
+        # is depth -> set[(x, y)]; seed it with the hero's start tile so the
+        # visited_grid is non-empty on turn 1. We key by the hero's ACTUAL
+        # current depth (blstats[12]) — NOT max_dlvl_reached, which is updated
+        # only later in env_response (line ~940), so on a descent turn the tiles
+        # would file under the old level while the template reads the new one.
         state["cell_schema"] = set(self.cell_schema)
         state["_visited_tiles"] = {}
         try:
             _bl = state["raw_obs"].blstats
             _hx, _hy = int(_bl[0]), int(_bl[1])
-            state["_visited_tiles"].setdefault(state["max_dlvl_reached"], set()).add((_hx, _hy))
+            state["_visited_tiles"].setdefault(int(_bl[12]), set()).add((_hx, _hy))
         except (KeyError, IndexError, TypeError, AttributeError):
             pass
         # Track every (x, y) at which `>` was seen on the visible map. Needed
@@ -787,11 +790,12 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
                 if ch not in (b" ", b"\x00"):
                     state["scout_tiles_seen"].add((state["max_dlvl_reached"], x, y))
             # Sub-experiment 1b: record the hero's current tile into the per-level
-            # visited set (drives visited_grid). Keyed by max_dlvl_reached to match
-            # the scout-set coordinate frame.
+            # visited set (drives visited_grid). Keyed by the hero's ACTUAL depth
+            # (blstats[12]) so descent turns file under the level the template
+            # will read (max_dlvl_reached lags until later in env_response).
             try:
                 _vb = last_obs.blstats
-                state["_visited_tiles"].setdefault(state["max_dlvl_reached"], set()).add(
+                state["_visited_tiles"].setdefault(int(_vb[12]), set()).add(
                     (int(_vb[0]), int(_vb[1]))
                 )
             except (AttributeError, IndexError, TypeError, KeyError):

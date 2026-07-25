@@ -199,7 +199,10 @@ def _structured_map_template(fmt):
                 raw = state["raw_obs"]
                 bl = np.asarray(raw.blstats)
                 player = (int(bl[0]), int(bl[1]))
-                dlvl_key = state.get("max_dlvl_reached", 1)
+                # Key visited tiles by the hero's ACTUAL depth (blstats[12]) so
+                # this read matches how the tracker files them (max_dlvl_reached
+                # lags a descent turn — see setup_state/env_response).
+                dlvl_key = int(bl[12])
                 visited_all = state.get("_visited_tiles") or {}
                 visited_xy = visited_all.get(dlvl_key, set())
                 cell_layers = build_cell_layers(
