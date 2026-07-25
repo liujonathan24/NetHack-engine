@@ -8,6 +8,15 @@ holds that spine fixed and varies ONE axis. Same verify-first discipline as Exp 
 
 Grounded in three code explorations (2026-07-24). Touch-points below are from those.
 
+**Decisions (2026-07-24):** (1) **Build + smoke all three now; run no n=16 sweeps yet** — the
+expensive runs are staged for a later model/scale decision (likely the Gemini 3 Pro finals).
+Every run auto-reports the **real BALROG %** (now wired into `aggregate_run.py`). (2) 1c uses a
+**real in-process `sub_lm`** for belief-state (tests summary quality, not just a status snapshot)
+**and** a **code flag for a truly zero-journal no-memory baseline**. (3) 1b ablates exactly
+**+seen, +visited, +reachability** on top of the current identification-rich JSON **base**
+("knowledge"/identification is already in the base `desc`/`species` fields, so it is not a
+separate arm); **lit/dark deferred** (no data source).
+
 ---
 
 ## 1b · JSON cell-content ablation — *what belongs in a cell*
