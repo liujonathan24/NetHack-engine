@@ -1,17 +1,18 @@
-# Dockerfile.prime — image for the Prime Intellect Hosted Training / Sandbox
-# runtime, with the custom NetHack fork engine prebuilt.
+# Dockerfile.prime — image for the Prime Intellect Sandbox runtime, with the
+# custom NetHack fork engine (libnethack.so) prebuilt.
 #
-# The harness runs on a struct-based NetHack fork (third_party/NetHack submodule)
-# via a ctypes binding — NOT the nle PyPI package. We build libnethack.so from
-# the submodule once and bake it into the image so pod startup is fast. The build
-# needs cmake + bison + flex + libbz2-dev (same toolchain nle needed).
+# This repo is the ENGINE (layer 1): nethack_core (a ctypes binding over the
+# NetHack fork — NOT the nle PyPI package) + nethack_interface (the typed raw
+# interface). The training/eval harness (the "nethack" Verifiers env) lives in
+# the separate Hub repo and depends on this engine as a package.
 #
-# IMPORTANT: build with the submodule checked out in the context:
+# We build libnethack.so from the submodule once and bake it into the image so
+# pod startup is fast. The build needs cmake + bison + flex + libbz2-dev.
+#
+# Build (submodule must be checked out in the context):
 #   git submodule update --init --recursive
-#   docker build -f Dockerfile.prime -t nethack-rl:latest .
-#
-# Run (local):   docker run --rm -it nethack-rl:latest pytest environments/nethack/tests -q
-# Push:          prime images push nethack-rl:latest
+#   docker build -f Dockerfile.prime -t nethack-engine:latest .
+# Run (local):  docker run --rm -it nethack-engine:latest pytest tests -q
 # See: https://docs.primeintellect.ai/tutorials-environments/sandbox
 
 FROM python:3.11-slim
@@ -27,14 +28,12 @@ RUN apt-get update -qq && \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
-WORKDIR /opt/nethack-rl
+WORKDIR /opt/nethack-engine
 
-# Copy dependency manifests first so Docker layer-caches the engine build across
-# iterations that only touch Python source.
+# Manifests first so Docker layer-caches the engine build across source-only edits.
 COPY pyproject.toml ./
 COPY nethack_core/pyproject.toml nethack_core/
-COPY environments/nethack/pyproject.toml environments/nethack/
-COPY environments/nethack/README.md environments/nethack/
+COPY nethack_interface/pyproject.toml nethack_interface/
 
 # The fork engine source (git submodule — must be checked out in the build
 # context) + the build script. Build libnethack.so before installing the
@@ -43,20 +42,18 @@ COPY third_party third_party/
 COPY nethack_core nethack_core/
 RUN bash nethack_core/build_engine.sh
 
-# The rest of the source.
-COPY environments environments/
+# The rest of the engine source + tests.
+COPY nethack_interface nethack_interface/
 COPY tests tests/
-COPY tools tools/
 COPY README.md ./
 
-# --- install packages (no nle / minihack) ---
+# --- install engine packages (no nle / minihack) ---
 RUN uv pip install --system -e nethack_core && \
-    uv pip install --system -e environments/nethack && \
-    uv pip install --system pytest pytest-asyncio
+    uv pip install --system -e nethack_interface && \
+    uv pip install --system pytest
 
 # --- smoke check: engine tests must pass at build time ---
-RUN pytest environments/nethack/tests -q
+RUN pytest tests -q
 
-# Default entrypoint: a bash for interactive debugging. CMD-override at run
-# time to launch vf-eval, prime-rl trainer, etc.
+# Default entrypoint: a bash for interactive debugging. CMD-override at run time.
 CMD ["/bin/bash"]

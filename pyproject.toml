@@ -1,28 +1,21 @@
 [project]
-name = "nethack-rl"
+name = "nethack-engine"
 version = "0.0.1"
-description = "Workspace root for nethack_core (layer 1) and nethack (layer 2 verifiers env)."
+description = "Workspace root for the NetHack engine: nethack_core (libnethack.so ctypes binding over the NetHack fork) + nethack_interface (typed raw interface)."
 requires-python = ">=3.10,<3.14"
-dependencies = [
-    "flask>=3.1.3",
-    "nethack-launchpad",
-]
+dependencies = []
 
 [tool.uv.workspace]
-members = ["nethack_core", "environments/nethack", "tools/launchpad", "nethack_interface"]
+members = ["nethack_core", "nethack_interface"]
 
 [tool.uv.sources]
 nethack-core = { workspace = true }
-nethack-launchpad = { workspace = true }
+nethack-interface = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = [
-    "slow: tests that take >5s (Hub-install reproduction, etc.)",
-]
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
-    "pytest-asyncio>=0.23",
 ]
