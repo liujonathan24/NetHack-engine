@@ -241,9 +241,18 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         # primitive into the effective action surface and confounding
         # cross-encoding comparisons. None/empty disables the gate (back-compat).
         allowed_skill_names: Optional[set] = None,
+        # Memory-ablation knob (sub-experiment 1c). When False, the tier
+        # description is NOT pre-pinned as the journal objective at setup, so a
+        # rollout with journal tools excluded and belief_state_interval=0 keeps
+        # the Journal empty → the "=== JOURNAL ===" block never renders. This
+        # is the only way to reach a truly no-memory arm: the objective pin at
+        # setup_state otherwise makes the journal non-empty on turn 1. Default
+        # True preserves the always-pinned-objective behavior.
+        pin_objective_on_setup: bool = True,
         **kwargs,
     ):
         self.interface = interface
+        self.pin_objective_on_setup = pin_objective_on_setup
         self._setup_tune = setup_tune
         self._setup_modify = setup_modify
         self._setup_level_blob = setup_level_blob
@@ -479,7 +488,11 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         # goal stays in every obs (without forcing the model to call
         # pin_objective). For dynamic_subgoal, the proposer pin below
         # overrides this with the LM-proposed objective.
-        if spec is not None and getattr(spec, "description", None):
+        if (
+            self.pin_objective_on_setup
+            and spec is not None
+            and getattr(spec, "description", None)
+        ):
             state["journal"].pin_objective(spec.description)
         if self.sub_lm is not None:
             state["sub_lm"] = self.sub_lm  # used by belief-state distillation
@@ -1358,6 +1371,17 @@ def load_environment(
     # engine default (random roll). Ignored by curriculum tiers (own character).
     character: Optional[str] = None,
     sub_lm=None,
+    # Sub-experiment 1c (memory ablation): build a real Prime-backed Sub-LM
+    # from a model id so belief-state distillation calls the model instead of
+    # the deterministic OfflineSubLM status-snapshot stub. Settable via the
+    # vf-eval `-a` string args (sub_lm is a Python object and cannot be). When
+    # set AND `sub_lm` is None, a PrimeSubLM(sub_lm_model) is constructed and
+    # passed as the env's sub_lm. None = unchanged (Offline/status-snapshot).
+    sub_lm_model: Optional[str] = None,
+    # When False, skip pre-pinning the tier description as the journal
+    # objective at setup → enables the no-memory arm (empty journal). See the
+    # env constructor for the full rationale.
+    pin_objective_on_setup: bool = True,
     subgoal_proposer=None,
     compact_obs: bool = True,
     history_keep_full: int = 5,
@@ -1469,6 +1493,14 @@ def load_environment(
     # hallucinated tool calls in env_response (see allowed_skill_names).
     _allowed_skill_names = {getattr(t, "__name__", "") for t in tool_callables} - {""}
 
+    # Sub-experiment 1c: when a sub_lm_model id is given (and no explicit
+    # sub_lm object was passed), build a real Prime-backed Sub-LM so
+    # belief-state distillation calls the model. `_maybe_belief_state_summary`
+    # uses it iff it is NOT an OfflineSubLM.
+    if sub_lm is None and sub_lm_model:
+        from nethack_harness.tools.code_mode import PrimeSubLM
+        sub_lm = PrimeSubLM(sub_lm_model)
+
     return NetHackVerifiersEnv(
         dataset=dataset,
         rubric=rubric,
@@ -1498,6 +1530,7 @@ def load_environment(
         setup_level_blob=level_blob,
         setup_character=character,
         allowed_skill_names=_allowed_skill_names,
+        pin_objective_on_setup=pin_objective_on_setup,
         **kwargs,
     )
 

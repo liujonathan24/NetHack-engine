@@ -395,3 +395,139 @@ class OfflineSubLM(SubLM):
 
 def _default_sub_lm() -> SubLM:
     return OfflineSubLM()
+
+
+# ---------- real Prime-backed Sub-LM (belief-state distillation) ----------
+
+
+def _resolve_prime_endpoint(model: str) -> dict:
+    """Resolve {base_url, api_key, headers} for `model` from configs/endpoints.toml.
+
+    Mirrors how vf-eval resolves `-m <model>` against the endpoint registry:
+    find the endpoint block whose `models` list contains `model` and use its
+    url / key-env / headers (e.g. the prime-team block's X-Prime-Team-ID, which
+    Prime requires to bill a funded team instead of the $0 personal balance).
+
+    Falls back to the Prime Inference URL + PI_API_KEY when the toml can't be
+    found or parsed, so this stays usable outside the repo tree. Env overrides
+    SUBLM_BASE_URL / SUBLM_API_KEY / PRIME_TEAM_ID win over everything.
+    """
+    import os
+    import tomllib
+
+    base_url = None
+    headers: dict[str, str] = {}
+    key_env = "PI_API_KEY"
+
+    # Walk up from cwd looking for configs/endpoints.toml.
+    here = os.getcwd()
+    toml_path = None
+    for _ in range(6):
+        cand = os.path.join(here, "configs", "endpoints.toml")
+        if os.path.exists(cand):
+            toml_path = cand
+            break
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    if toml_path is None:
+        env_toml = os.getenv("ENDPOINTS_PATH")
+        if env_toml and os.path.exists(env_toml):
+            toml_path = env_toml
+
+    if toml_path is not None:
+        try:
+            with open(toml_path, "rb") as f:
+                cfg = tomllib.load(f)
+            for ep in cfg.get("endpoints", []):
+                if model in (ep.get("models") or []):
+                    base_url = ep.get("url")
+                    key_env = ep.get("key", key_env)
+                    headers = dict(ep.get("headers") or {})
+                    break
+        except Exception:
+            pass
+
+    base_url = os.getenv("SUBLM_BASE_URL") or base_url or "https://api.pinference.ai/api/v1"
+    api_key = (
+        os.getenv("SUBLM_API_KEY")
+        or os.getenv(key_env)
+        or os.getenv("PI_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    )
+    team_override = os.getenv("PRIME_TEAM_ID")
+    if team_override:
+        headers["X-Prime-Team-ID"] = team_override
+    return {"base_url": base_url, "api_key": api_key, "headers": headers}
+
+
+_SUBLM_SYSTEM_PROMPT = (
+    "You are a belief-state summarizer for a NetHack-playing agent. Given the "
+    "agent's current status line and its running journal notes, write ONE compact "
+    "sentence (<=40 words) capturing the agent's situation and what it should do "
+    "next: dungeon level, HP posture, notable threats/items, and the immediate "
+    "objective. No preamble, no markdown, just the sentence."
+)
+
+
+class PrimeSubLM(SubLM):
+    """Real, in-process Sub-LM backed by an OpenAI-compatible chat endpoint.
+
+    Built from a model id (e.g. "google/gemini-3-flash-preview") plus the
+    endpoint registry (configs/endpoints.toml) so belief-state distillation
+    calls the SAME Prime team-billed path the main policy uses. `summarize`
+    returns a real one-sentence LM summary; on any error it falls back to a
+    short deterministic head-of-text stub so it never breaks a rollout.
+
+    plan/recall are not used by belief-state; they delegate to a stub so the
+    SubLM interface stays complete.
+    """
+
+    def __init__(self, model: str, *, base_url: Optional[str] = None,
+                 api_key: Optional[str] = None, headers: Optional[dict] = None,
+                 timeout_s: float = 30.0, max_tokens: int = 120) -> None:
+        import os
+        if base_url is None or api_key is None or headers is None:
+            resolved = _resolve_prime_endpoint(model)
+            base_url = base_url or resolved["base_url"]
+            api_key = api_key or resolved["api_key"]
+            headers = resolved["headers"] if headers is None else headers
+        self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
+        self.headers = dict(headers or {})
+        self.timeout_s = float(os.getenv("SUBLM_TIMEOUT_S", timeout_s))
+        self.max_tokens = max_tokens
+        self._offline = OfflineSubLM()
+
+    def summarize(self, text: str, query: Optional[str] = None) -> str:
+        if not self.api_key:
+            return self._offline.summarize(text, query)
+        try:
+            from openai import OpenAI  # type: ignore
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                default_headers=self.headers or None,
+            )
+            user_msg = text if not query else f"[{query}]\n{text}"
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": _SUBLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                max_tokens=self.max_tokens,
+                timeout=self.timeout_s,
+            )
+            out = (resp.choices[0].message.content or "").strip()
+            return out or self._offline.summarize(text, query)
+        except Exception:
+            return self._offline.summarize(text, query)
+
+    def plan(self, objective: str, horizon: int = 5) -> list[str]:
+        return self._offline.plan(objective, horizon)
+
+    def recall(self, query: str, context: str = "") -> str:
+        return self._offline.recall(query, context)
