@@ -57,3 +57,10 @@ nle_crash_*.txt
 /tools/run_demo.py
 /tools/record_versioned_demo.py
 /tools/compare_evals.py
+
+# Encoding-eval run artifacts: bulky per-turn traces / logs / vf-eval eval dirs.
+# Keep the small aggregated tables (table.md / table.json) tracked.
+/outputs/encoding_eval/**/trace/
+/outputs/encoding_eval/**/evals/
+/outputs/encoding_eval/**/*.log
+/outputs/encoding_eval/*.log
