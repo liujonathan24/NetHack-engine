@@ -1886,3 +1886,87 @@ def wiki_search(env: NetHackCoreEnv, obs: StructuredObservation, query: str, k: 
         )
     body = "\n\n".join(f"[{p.title}] {p.short(200)}" for p in pages)
     return SkillResult(actions=[], feedback=body, interrupted=True)
+
+
+# ---------- sub-experiment 1d: on-demand map delivery ----------
+
+# Map grid extent (NLE dungeon area). Columns x are 0..78, rows y are 0..20;
+# the map row y corresponds to tty row y+1 (row 0 is the top message line).
+_MAP_MAX_X = 78
+_MAP_MAX_Y = 20
+_REVEAL_MAX_W = 40   # cap the revealed rectangle so a huge box can't blow up
+_REVEAL_MAX_H = 20   # the prompt; larger requests are clamped, not rejected.
+
+
+@registry.register("reveal", schema={
+    "description": (
+        "Reveal a rectangular region of the dungeon map as ASCII (for the "
+        "bounding-box observation mode, where the map is otherwise hidden). "
+        "Coordinates are map cells: x = column 0-78, y = row 0-20, inclusive. "
+        "Returns the sub-rectangle as text; consumes NO game turn. Oversized "
+        "or out-of-range requests are clamped to the grid."
+    ),
+    "parameters": {
+        "x1": {"type": "integer", "description": "Left column (0-78)."},
+        "y1": {"type": "integer", "description": "Top row (0-20)."},
+        "x2": {"type": "integer", "description": "Right column (0-78)."},
+        "y2": {"type": "integer", "description": "Bottom row (0-20)."},
+    },
+})
+def reveal(env: NetHackCoreEnv, obs: StructuredObservation,
+           x1: int, y1: int, x2: int, y2: int) -> SkillResult:
+    # Skills receive (env, obs), not `state`; the raw tty grid is reachable via
+    # the env's last observation (identical object to state["raw_obs"]).
+    import numpy as np
+    raw = getattr(env, "_last_observation", None)
+    tty = getattr(raw, "tty_chars", None) if raw is not None else None
+    if tty is None:
+        return SkillResult(actions=[], feedback="reveal: map unavailable this turn.",
+                           interrupted=True)
+    try:
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+    except (TypeError, ValueError):
+        return SkillResult(actions=[], feedback="reveal: coordinates must be integers.",
+                           interrupted=True)
+    if x1 > x2:
+        x1, x2 = x2, x1
+    if y1 > y2:
+        y1, y2 = y2, y1
+    # Clamp to the map grid.
+    x1 = max(0, min(_MAP_MAX_X, x1))
+    x2 = max(0, min(_MAP_MAX_X, x2))
+    y1 = max(0, min(_MAP_MAX_Y, y1))
+    y2 = max(0, min(_MAP_MAX_Y, y2))
+    # Bound the rectangle size.
+    if x2 - x1 > _REVEAL_MAX_W:
+        x2 = x1 + _REVEAL_MAX_W
+    if y2 - y1 > _REVEAL_MAX_H:
+        y2 = y1 + _REVEAL_MAX_H
+    grid = np.asarray(tty)
+    # Map row y = tty row y+1; slice rows [y1+1 .. y2+1], cols [x1 .. x2].
+    sub = grid[y1 + 1: y2 + 2, x1: x2 + 1]
+    rows = []
+    for i, row in enumerate(sub):
+        line = "".join(chr(int(c)) if int(c) else " " for c in row)
+        rows.append(f"y{y1 + i:>2}: {line}")
+    body = f"reveal (x{x1}-{x2}, y{y1}-{y2}):\n" + "\n".join(rows)
+    if len(body) > 1600:  # defensive char cap
+        body = body[:1600] + " ...(truncated)"
+    return SkillResult(actions=[], feedback=body, interrupted=True)
+
+
+@registry.register("request_map", schema={
+    "description": (
+        "Force the FULL map back into this turn's observation. Under the "
+        "delayed-map observation mode the map is re-sent only when it "
+        "materially changed; call this to refresh it on demand. Consumes NO "
+        "game turn."
+    ),
+    "parameters": {},
+})
+def request_map(env: NetHackCoreEnv, obs: StructuredObservation) -> SkillResult:
+    # The template's force flag (state["_force_map"]) is set in env_response,
+    # which owns `state`; this skill only returns a confirmation with empty
+    # actions so no NLE step is taken.
+    return SkillResult(actions=[], feedback="Refreshing the full map this turn.",
+                       interrupted=True)

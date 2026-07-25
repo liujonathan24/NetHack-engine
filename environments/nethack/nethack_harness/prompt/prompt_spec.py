@@ -218,6 +218,115 @@ def _structured_map_template(fmt):
     return _render
 
 
+# ---------- sub-experiment 1d: observation-DELIVERY variants ----------
+
+# Placeholder that stands in for the map block on a delayed-map turn where the
+# map is elided (no material change and no forced refresh).
+_DELAYED_MAP_PLACEHOLDER = "=== MAP (unchanged; call request_map to refresh) ==="
+# Placeholder shown by the bounding-box variant, where the map is hidden and
+# only reachable through the reveal() tool.
+_BBOX_MAP_PLACEHOLDER = "=== MAP (hidden; call reveal(x1,y1,x2,y2) to view a region) ==="
+
+
+def _delayed_map_fingerprint(structured, state):
+    """Cheap material-change signal for the delayed-map variants.
+
+    Any move or newly-seen tile changes ``structured.map_view`` (the @ position
+    and revealed glyphs are baked into it), so the map is re-sent; a no-op turn
+    (info-only skill, blocked action, in-place search that reveals nothing)
+    leaves it byte-identical and the map is elided. Also keyed on the dungeon
+    level so a stair transition always forces a refresh. Mirrors the
+    journal/inventory fingerprint pattern in rendering.py.
+    """
+    try:
+        map_view = getattr(structured, "map_view", "") or ""
+    except Exception:
+        map_view = ""
+    dlvl = state.get("max_dlvl_reached", 1) if state is not None else 1
+    return (dlvl, hash(map_view))
+
+
+def _delayed_map_template(base_fmt):
+    """Delayed / on-demand map delivery (variants DM, DM_JSON).
+
+    The FULL map is re-sent only when it materially changed (dlvl or map
+    fingerprint) OR the agent forced a refresh via request_map/reveal
+    (``state['_force_map']``, set in env_response). Otherwise a one-line
+    placeholder stands in for the map block. Action feedback + status render
+    unchanged every turn (they ride the caller's prefix_parts / the status
+    block here), independent of whether the map is shown.
+
+    ``base_fmt`` selects the encoding the FULL map uses so delayed delivery
+    composes with either baseline: "ascii" (B0-style grid via
+    format_observation_as_chat) or "json" (structured JSON map via the same
+    builder the JSON variant uses, including any 1b cell layers).
+    """
+    _json_full = _structured_map_template("json")
+
+    def _render(structured, journal, state, *, compact, journal_max_chars):
+        force = bool(state.pop("_force_map", False)) if state is not None else False
+        cur_fp = _delayed_map_fingerprint(structured, state)
+        prev_fp = state.get("_delayed_map_fp") if state is not None else None
+        show_map = force or prev_fp is None or cur_fp != prev_fp
+        if state is not None:
+            state["_delayed_map_fp"] = cur_fp
+
+        if base_fmt == "json":
+            if show_map:
+                return _json_full(
+                    structured, journal, state,
+                    compact=compact, journal_max_chars=journal_max_chars,
+                )
+            status = format_observation_as_chat(
+                structured, journal, state, compact=compact,
+                journal_max_chars=journal_max_chars,
+                include_map=False, include_local=False,
+            )
+            return f"{_DELAYED_MAP_PLACEHOLDER}\n\n{status}"
+
+        # ascii
+        if show_map:
+            return format_observation_as_chat(
+                structured, journal, state,
+                compact=compact, journal_max_chars=journal_max_chars,
+            )
+        text = format_observation_as_chat(
+            structured, journal, state, compact=compact,
+            journal_max_chars=journal_max_chars, include_map=False,
+        )
+        return _splice_placeholder(text, _DELAYED_MAP_PLACEHOLDER)
+
+    return _render
+
+
+def _bbox_template(structured, journal, state, *, compact, journal_max_chars):
+    """Bounding-box on-demand map (variant BBOX).
+
+    The map is never rendered inline; the agent sees it only by calling
+    ``reveal(x1,y1,x2,y2)``, which returns the requested sub-rectangle as tool
+    feedback (no NLE step). Everything else (journal, status, inventory,
+    under-player) renders normally.
+    """
+    text = format_observation_as_chat(
+        structured, journal, state, compact=compact,
+        journal_max_chars=journal_max_chars, include_map=False,
+    )
+    return _splice_placeholder(text, _BBOX_MAP_PLACEHOLDER)
+
+
+def _splice_placeholder(text: str, placeholder: str) -> str:
+    """Insert a map placeholder where the (omitted) map block would have been.
+
+    The canonical renderer puts the map immediately before ``=== STATUS ===``;
+    with include_map=False that block is absent, so we splice the placeholder in
+    just ahead of STATUS to keep the layout familiar. Falls back to prepending.
+    """
+    marker = "=== STATUS ==="
+    if marker in text:
+        return text.replace(marker, f"{placeholder}\n\n{marker}", 1)
+    return f"{placeholder}\n\n{text}"
+
+
 # ---------- cross-cutting hooks (verbatim from the legacy env_response) ----------
 
 
@@ -367,6 +476,19 @@ def _build_registry(system_prompt: str) -> dict:
         # map model; map_detail (full/minimal) rides on state["map_detail"].
         "JSON": canonical("JSON", turn_template=_structured_map_template("json")),
         "TOON": canonical("TOON", turn_template=_structured_map_template("toon")),
+        # Sub-experiment 1d (observation DELIVERY): delayed / on-demand map.
+        # The FULL map is re-sent only on a material change or an explicit
+        # request_map/reveal; otherwise a placeholder stands in. Action feedback
+        # is unchanged every turn. Composes with the ASCII (DM) and JSON
+        # (DM_JSON) encodings.
+        "DM": canonical("DM", turn_template=_delayed_map_template("ascii"),
+                        obs=ObsSpec(setup_flags={"_delayed_map": True})),
+        "DM_JSON": canonical("DM_JSON", turn_template=_delayed_map_template("json"),
+                             obs=ObsSpec(setup_flags={"_delayed_map": True})),
+        # Bounding-box on-demand: the map is hidden; the agent views regions via
+        # reveal(x1,y1,x2,y2), which returns an ASCII crop as tool feedback.
+        "BBOX": canonical("BBOX", turn_template=_bbox_template,
+                          obs=ObsSpec(setup_flags={"_bbox_map": True})),
         # Continual-harness adaptation: periodic self-refinement directive.
         "P": canonical("P", turn_hooks=(_p_refinement_hook,)),
         # Full Continual Harness: refiner + sub-agents + system inject + run_macro.

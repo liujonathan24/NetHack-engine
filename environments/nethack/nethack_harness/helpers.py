@@ -853,7 +853,9 @@ def _build_skill_adapter_callables(skill_set: str = "full") -> list:
         keep = {"move_to", "explore_and_descend",
                 "attack", "throw", "descend", "search", "pickup", "engrave_elbereth", "pray",
                 "eat", "quaff", "read", "kick", "add_note", "recall",
-                "pin_objective", "wiki_lookup", "wiki_search"}
+                "pin_objective", "wiki_lookup", "wiki_search",
+                # Sub-experiment 1d observation-delivery tools (on-demand map).
+                "reveal", "request_map"}
         out = []
         for name, schema in skill_registry.all_schemas().items():
             if name in _HARNESS_OWNED: continue

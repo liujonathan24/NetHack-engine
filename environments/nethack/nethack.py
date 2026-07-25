@@ -720,6 +720,14 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
                 skill_name, env, state["structured_obs"], **skill_args
             )
 
+        # Sub-experiment 1d (delayed-map / DM variants): request_map and reveal
+        # are info-only skills (empty actions) that force the FULL map back into
+        # this turn's rendered observation. Skills can't reach `state`, so the
+        # DM template's force flag is set here in env_response (which owns
+        # `state`); _delayed_map_template pops it. No NLE step is consumed.
+        if skill_name in ("request_map", "reveal"):
+            state["_force_map"] = True
+
         # Journal skills: apply the journal op and short-circuit the env step.
         # No NLE turn is consumed; the agent's next prompt reflects the change.
         if result.journal_op is not None:
