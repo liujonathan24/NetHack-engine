@@ -151,6 +151,28 @@ from nethack_harness.prompt.prompt_spec import (
 from nethack_harness.prompt.content import compose_user_content, content_to_text
 
 
+# Sub-experiment 1b: the per-cell SPATIAL/EXPLORATION attributes the JSON map
+# can be enriched with. Each maps to one compact RLE 0/1 mask layer.
+_VALID_CELL_ATTRS = frozenset({"seen", "visited", "reach"})
+
+
+def _normalize_cell_schema(cell_schema) -> set:
+    """Coerce a cell_schema arg to a validated set of attribute names.
+
+    Accepts None, a set/list/tuple, or a string (comma / whitespace / '+'
+    separated, so the vf-eval `-a` JSON args can pass e.g. "seen+visited").
+    Unknown tokens are dropped. Empty result = current JSON, unchanged.
+    """
+    if not cell_schema:
+        return set()
+    if isinstance(cell_schema, str):
+        import re
+        tokens = [t for t in re.split(r"[,\s+]+", cell_schema.strip()) if t]
+    else:
+        tokens = list(cell_schema)
+    return {t for t in (str(x).strip().lower() for x in tokens) if t in _VALID_CELL_ATTRS}
+
+
 class NetHackVerifiersEnv(vf.StatefulToolEnv):
     """
     Per-rollout state: a live NetHackCoreEnv plus character + cumulative scout count.
@@ -187,6 +209,14 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         # emits rich entity attrs + RLE grid; "minimal" trims to kind/coord/desc.
         # Threaded onto state["map_detail"] for the per-turn template to read.
         map_detail: str = "full",
+        # Sub-experiment 1b (JSON cell-content ablation): a collection of
+        # per-cell SPATIAL/EXPLORATION attributes to enrich the JSON map with.
+        # Drawn from {"seen","visited","reach"}; each enabled attr emits a
+        # compact RLE 0/1 mask layer (seen_grid / visited_grid / reach_grid).
+        # Accepts a set/list or a comma/space/+-separated string (so the
+        # vf-eval `-a` JSON args can pass it). Empty/None = current JSON,
+        # unchanged. Only consumed by variant="JSON"; ignored by TOON.
+        cell_schema=None,
         refine_interval: int = 20,
         # Variant R (CPP/GPP summarize-and-reset): when True, get_prompt_messages
         # hard-drops every user/assistant turn that landed before the most-recent
@@ -274,6 +304,8 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         self.journal_render_max_chars = journal_render_max_chars
         self.variant = variant
         self.map_detail = map_detail
+        # Sub-experiment 1b: normalize the requested per-cell attribute set once.
+        self.cell_schema = _normalize_cell_schema(cell_schema)
         # Single predicate gating ALL refiner machinery (teacher construction,
         # separation guard, bootstrap I/O, edit capture, spec hooks). variant=="CH"
         # always implies the refiner; `refine=True` opts ANY other variant in.
@@ -445,6 +477,18 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
         except Exception:
             pass
         state["map_detail"] = self.map_detail
+        # Sub-experiment 1b: the requested per-cell attribute set (consumed by
+        # the JSON template) and the per-level visited-tile tracker. The tracker
+        # is dlvl -> set[(x, y)]; seed it with the hero's start tile so the
+        # visited_grid is non-empty on turn 1.
+        state["cell_schema"] = set(self.cell_schema)
+        state["_visited_tiles"] = {}
+        try:
+            _bl = state["raw_obs"].blstats
+            _hx, _hy = int(_bl[0]), int(_bl[1])
+            state["_visited_tiles"].setdefault(state["max_dlvl_reached"], set()).add((_hx, _hy))
+        except (KeyError, IndexError, TypeError, AttributeError):
+            pass
         # Track every (x, y) at which `>` was seen on the visible map. Needed
         # because once the player steps ONTO `>`, the @ overlay hides it and
         # extract_visible_features stops finding the tile — without memory,
@@ -734,6 +778,16 @@ class NetHackVerifiersEnv(vf.StatefulToolEnv):
             for (x, y), ch in _iterate_visible_tiles(last_obs):
                 if ch not in (b" ", b"\x00"):
                     state["scout_tiles_seen"].add((state["max_dlvl_reached"], x, y))
+            # Sub-experiment 1b: record the hero's current tile into the per-level
+            # visited set (drives visited_grid). Keyed by max_dlvl_reached to match
+            # the scout-set coordinate frame.
+            try:
+                _vb = last_obs.blstats
+                state["_visited_tiles"].setdefault(state["max_dlvl_reached"], set()).add(
+                    (int(_vb[0]), int(_vb[1]))
+                )
+            except (AttributeError, IndexError, TypeError, KeyError):
+                pass
             if terminated or truncated:
                 break
             # Status-aware halt: check after each step (cheap — just blstats).
@@ -1389,6 +1443,12 @@ def load_environment(
     belief_state_interval: int = 25,
     journal_render_max_chars: int = 2000,
     variant: str = "B1",
+    # Sub-experiment 1b (JSON cell-content ablation): per-cell SPATIAL/
+    # EXPLORATION attributes to enrich the JSON map with, drawn from
+    # {"seen","visited","reach"}. Pass as a JSON list (["seen","visited"]) or a
+    # "seen+visited"-style string via the vf-eval `-a` args. Empty/None = base
+    # JSON, unchanged. Only affects variant="JSON".
+    cell_schema=None,
     refine_interval: int = 20,
     summarize_and_reset: bool = False,
     trace_dir: Optional[str] = None,
@@ -1515,6 +1575,7 @@ def load_environment(
         belief_state_interval=belief_state_interval,
         journal_render_max_chars=journal_render_max_chars,
         variant=variant,
+        cell_schema=cell_schema,
         spec=spec,
         refine_interval=refine_interval,
         summarize_and_reset=summarize_and_reset,

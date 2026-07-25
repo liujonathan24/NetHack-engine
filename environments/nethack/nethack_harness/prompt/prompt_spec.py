@@ -174,16 +174,40 @@ def _structured_map_template(fmt):
     ``fmt`` is "json" or "toon". The map_detail level is read from
     ``state["map_detail"]`` (default "full"). The status/inventory block is
     appended via the canonical formatter with the ASCII map gated off.
+
+    Sub-experiment 1b (JSON only): when ``state["cell_schema"]`` names any of
+    {"seen","visited","reach"}, the JSON base is enriched with a COMPACT 0/1
+    mask layer per enabled attribute (``seen_grid`` / ``visited_grid`` /
+    ``reach_grid``), computed here from ``state`` and RLE-encoded like the
+    terrain grid. A disabled attribute is ABSENT from the JSON. TOON is
+    unaffected (empty cell_schema leaves JSON bit-identical to before).
     """
 
     def _render(structured, journal, state, *, compact, journal_max_chars):
         from nethack_core import build_map_model
-        from nethack_harness.prompt.map_encoders import json_encode, toon_encode
+        from nethack_harness.prompt.map_encoders import (
+            json_encode, toon_encode, build_cell_layers,
+        )
 
         detail = state.get("map_detail", "full")
         model = build_map_model(state["raw_obs"])
-        enc = json_encode if fmt == "json" else toon_encode
-        map_text = enc(model, detail=detail)
+        if fmt == "json":
+            cell_schema = state.get("cell_schema") or set()
+            cell_layers = None
+            if cell_schema:
+                import numpy as np
+                raw = state["raw_obs"]
+                bl = np.asarray(raw.blstats)
+                player = (int(bl[0]), int(bl[1]))
+                dlvl_key = state.get("max_dlvl_reached", 1)
+                visited_all = state.get("_visited_tiles") or {}
+                visited_xy = visited_all.get(dlvl_key, set())
+                cell_layers = build_cell_layers(
+                    raw.chars, player, visited_xy, cell_schema,
+                )
+            map_text = json_encode(model, detail=detail, cell_layers=cell_layers)
+        else:
+            map_text = toon_encode(model, detail=detail)
         status = format_observation_as_chat(
             structured, journal, state, compact=compact,
             journal_max_chars=journal_max_chars,
