@@ -75,7 +75,7 @@ def test_optional_and_web_console_fields_are_accepted():
 def test_version_2_fields_are_optional_so_legacy_records_still_validate():
     """Every v2 addition is optional by construction: the pre-versioning traces
     (and the committed CLI-arm reference traces) carry none of them."""
-    assert ts.TRACE_SCHEMA_VERSION == 2
+    assert ts.TRACE_SCHEMA_VERSION >= 2
     assert ts.is_valid(_minimal_record())
     for field in ("t_mono", "lm_turn", "applied", "actions", "all_messages",
                   "tool_results", "gt_obs"):

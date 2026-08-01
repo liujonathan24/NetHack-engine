@@ -45,6 +45,21 @@ Schema history
     / whether the game clock advanced).
   - ``gt_obs``   — the engine's ground-truth observation planes, packed and
     compressed (see :func:`encode_obs_blob`).
+* ``3`` — provenance of the *decision*, not the game. Also additive/optional,
+  so version 0-2 records still validate unchanged:
+
+  - ``dispatch_route`` — which route delivered this tool call: ``"harness"``
+    (the in-process v0 rollout loop parsed it out of an assistant message) or
+    ``"mcp"`` (a CLI agent called the tool server directly). The two routes
+    have structurally different visibility into the model, and the field says
+    which one a record came from instead of leaving a reader to infer it from
+    an empty ``assistant_message``. See :data:`DISPATCH_ROUTES`.
+  - ``reasoning``  — an explicit record of whether the agent's own words for
+    this turn are available, where they came from, and -- when they are not --
+    WHY. Measured before this existed: ``assistant_message`` was ``""`` on
+    100% of CLI-arm turns with nothing distinguishing "the model said nothing"
+    from "this route cannot see what the model said". See
+    :func:`reasoning_record` / :func:`unavailable_reasoning`.
 """
 from __future__ import annotations
 
@@ -55,7 +70,7 @@ from pathlib import Path
 from typing import IO, Iterator, Union
 
 # Current on-disk schema version. Bump when the field set changes.
-TRACE_SCHEMA_VERSION = 2
+TRACE_SCHEMA_VERSION = 3
 
 # The key under which the version is stamped in each record.
 SCHEMA_VERSION_KEY = "schema_version"
@@ -99,6 +114,9 @@ OPTIONAL_FIELDS: tuple[str, ...] = (
     "all_messages",            # list[str]: every in-game message this turn, in order
     "tool_results",            # list[dict]: machine-readable per-call outcomes
     "gt_obs",                  # dict|None: packed ground-truth observation planes
+    # --- schema version 3 (all additive/optional) ---------------------------
+    "dispatch_route",          # str: "harness" | "mcp" (see DISPATCH_ROUTES)
+    "reasoning",               # dict: the agent's words + their provenance
 )
 
 #: Every documented field name.
@@ -302,6 +320,79 @@ TOOL_STATUSES: tuple[str, ...] = (
     "not_applied",     # emitted by the model but the rollout ended first
     "unknown",
 )
+
+
+# ---------------------------------------------------------------------------
+# version 3: dispatch route + reasoning provenance
+# ---------------------------------------------------------------------------
+
+#: How this turn's tool call reached the engine.
+#:
+#: ``harness`` -- the in-process v0 rollout loop parsed it out of the assistant
+#: message it had just received, so the model's own text is in hand at write
+#: time. ``mcp`` -- a CLI agent (Claude Code, Prime Agent) called the tool
+#: server over MCP; the server sees the call and its arguments but never the
+#: message that produced it. Both routes run the SAME ``_apply_tool_call``, so
+#: everything about the game is identical; only the visibility into the model
+#: differs, and that is what this field records.
+DISPATCH_ROUTES: tuple[str, ...] = ("harness", "mcp")
+
+#: Where a record's ``reasoning.text`` came from.
+#:
+#: ``assistant_message`` -- captured inline at write time from the message the
+#: harness had just parsed (the control arm).
+#: ``trace_nodes`` -- backfilled after the rollout from the sampled assistant
+#: messages the verifiers interception server recorded on the rollout trace
+#: (``traces.jsonl``'s ``nodes``). This is the only source available to the
+#: MCP route, because the tool server is a different process from the one the
+#: model talks to.
+REASONING_SOURCES: tuple[str, ...] = ("assistant_message", "trace_nodes")
+
+#: How a backfilled ``reasoning`` block was matched to its turn record.
+#:
+#: ``inline`` -- no matching needed; the message was in hand when the record
+#: was written. ``tool_call_sequence`` -- the sampled assistant turns' game
+#: tool-call names were matched, in order, against the dispatched calls, and
+#: the two sequences agreed. ``ordinal`` -- the counts agreed 1:1 and the
+#: records were paired by position (used when names cannot be compared).
+REASONING_ALIGNMENTS: tuple[str, ...] = ("inline", "tool_call_sequence", "ordinal")
+
+
+def reasoning_record(text, source: str, alignment: str,
+                     reasoning_text: str = "") -> dict:
+    """One available ``reasoning`` block.
+
+    ``text`` is the assistant's visible content for the turn; ``reasoning_text``
+    is the provider's separate reasoning channel (``reasoning_content``) when
+    one was returned, kept apart because it is not always replayable and is
+    priced differently.
+    """
+    return {
+        "available": True,
+        "source": source,
+        "alignment": alignment,
+        "text": text or "",
+        "reasoning_text": reasoning_text or "",
+        "reason": "",
+    }
+
+
+def unavailable_reasoning(reason: str) -> dict:
+    """One ``reasoning`` block for a turn whose agent-side text is NOT available.
+
+    The reason is mandatory and is the whole point of the field: an explicit
+    "unavailable because <the tool server never sees the model's message>"
+    is a different fact from "the model chose to say nothing", and an empty
+    ``assistant_message`` string cannot tell them apart.
+    """
+    return {
+        "available": False,
+        "source": None,
+        "alignment": None,
+        "text": "",
+        "reasoning_text": "",
+        "reason": reason,
+    }
 
 
 def record_version(record: dict) -> int:
