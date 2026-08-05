@@ -9,16 +9,27 @@ binding — `nle` / `minihack` are no longer used. The fork turns NetHack into a
 level blobs, secure state edits, and 17 live difficulty/generation knobs. On top
 of it sits an LLM-agent harness with a skill + code-mode interface, a 13-tier
 curriculum, a dozen-plus observation encodings, replay capture, a web console,
-and an in-browser rollout viewer. Hosted as an environment in Prime Intellect's Verifiers library.
+and an in-browser rollout viewer — those upper layers now live in `NetHack-hub`
+and `NetHack-console` (see below). Hosted as an environment in Prime Intellect's
+Verifiers library.
 
 **Mirrors:**
 - Prime Hub: [`jonathanliu/nethack`](https://app.primeintellect.ai/dashboard/environments/jonathanliu/nethack) (v0.0.66+)
-- GitHub: [`liujonathan24/NetHackHarness`](https://github.com/liujonathan24/NetHackHarness)
+- GitHub: [`liujonathan24/NetHack-engine`](https://github.com/liujonathan24/NetHack-engine) (formerly `NetHackHarness`)
 
-**Start here:** [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) (what the repo can
-do) · [`docs/REPO_MAP.md`](docs/REPO_MAP.md) (where everything lives + one turn,
-end to end) · [`docs/engine-layer.md`](docs/engine-layer.md) (the engine
-reference) · [`docs/design.md`](docs/design.md) (design doc).
+**Where things live.** The monolith was split in #44; this repo is the engine
+only. Everything else moved:
+
+| Repo | What it holds |
+|---|---|
+| [`NetHack-engine`](https://github.com/liujonathan24/NetHack-engine) (here) | The engine: `nethack_core`, `nethack_interface`, the NetHack fork submodule, engine tests. |
+| [`NetHack-hub`](https://github.com/liujonathan24/NetHack-hub) | The harness / agent / experiment layer: `environments/`, `approaches/`, `tools/`, `configs/`, `docs/`, `experiments/`, `wiki/`. |
+| [`NetHack-console`](https://github.com/liujonathan24/NetHack-console) | The website, live-play console, and rollout viewer — **and the published site**, <https://liujonathan24.github.io/NetHack-console/>. |
+
+**Start here:** [`docs/CAPABILITIES.md`](https://github.com/liujonathan24/NetHack-hub/blob/main/docs/CAPABILITIES.md) (what the repo can
+do) · [`docs/REPO_MAP.md`](https://github.com/liujonathan24/NetHack-hub/blob/main/docs/REPO_MAP.md) (where everything lives + one turn,
+end to end) · [`docs/engine-layer.md`](https://github.com/liujonathan24/NetHack-hub/blob/main/docs/engine-layer.md) (the engine
+reference) · [`docs/design.md`](https://github.com/liujonathan24/NetHack-hub/blob/main/docs/design.md) (design doc).
 
 ---
 
@@ -56,102 +67,60 @@ that the gym wrapper structurally cannot:
 Measured result: on matched seeds, a Qwen3-VL agent reaches **mean max dlvl
 2.74 ± 0.41** (uncompressed ASCII + pet), clearing NetPlay's GPT-4 figure of 2.6;
 the single biggest lever turned out to be **un**compressing the ASCII map. See
-[`docs/netplay-parity-report.md`](docs/netplay-parity-report.md).
+[`docs/netplay-parity-report.md`](https://github.com/liujonathan24/NetHack-hub/blob/main/docs/netplay-parity-report.md).
 
 ## Demos
 
 **Difficulty & generation knobs** — the same seed, re-rolled across knob values
-(rendered by `tools/knob_gifs.py`):
+(rendered by `tools/knob_gifs.py`, in `NetHack-hub`):
 
 | Fog of war → full reveal | Room density |
 |---|---|
-| ![reveal_map](videos/gif_reveal_map.gif) | ![room_density](videos/gif_room_density.gif) |
+| ![reveal_map](https://raw.githubusercontent.com/liujonathan24/NetHack-console/main/videos/gif_reveal_map.gif) | ![room_density](https://raw.githubusercontent.com/liujonathan24/NetHack-console/main/videos/gif_room_density.gif) |
 | **Room size** | **Mob spawn** |
-| ![room_size](videos/gif_room_size.gif) | ![mob_spawn](videos/gif_mob_spawn.gif) |
+| ![room_size](https://raw.githubusercontent.com/liujonathan24/NetHack-console/main/videos/gif_room_size.gif) | ![mob_spawn](https://raw.githubusercontent.com/liujonathan24/NetHack-console/main/videos/gif_mob_spawn.gif) |
 
 **Live snapshot / restore** — play forward, then step back through in-memory
 snapshots (the same mechanism behind the web console's Undo and Checkpoint
 buttons and `branch(n)`):
 
-![backstep](videos/gif_backstep.gif)
+![backstep](https://raw.githubusercontent.com/liujonathan24/NetHack-console/main/videos/gif_backstep.gif)
 
 **What the model actually sees** — the rollout viewer / web console show the
 exact LLM input per turn. Encodings compared side by side on one seed:
 
 | NetPlay-style vs. B1 ASCII | Salience / dir8 variants |
 |---|---|
-| ![n23 vs b1](videos/N23_vs_B1_24.gif) | ![salience](videos/seed24_salienceND_COMPACTED.gif) |
+| ![n23 vs b1](https://raw.githubusercontent.com/liujonathan24/NetHack-console/main/videos/N23_vs_B1_24.gif) | ![salience](https://raw.githubusercontent.com/liujonathan24/NetHack-console/main/videos/seed24_salienceND_COMPACTED.gif) |
 
-## Web console
+## Web console and rollout viewer → `NetHack-console`
 
-A Flask app (`tools/play_server.py`) over a shared engine, for live play and
-demos:
+Both moved out of this repo in #44 and now live in
+**[`NetHack-console`](https://github.com/liujonathan24/NetHack-console)**, which
+also publishes the public site:
 
-```bash
-PYTHONPATH="$PWD:$PWD/environments/nethack" python tools/play_server.py
-# then open http://127.0.0.1:8080  (--host / --port to change)
-```
+- **Play it in the browser, no install:**
+  **<https://liujonathan24.github.io/NetHack-console/>**
+  (mirrored at <https://liu-jonathan.com/nethack/>) — a client-side WebAssembly
+  build of this engine. Pages: Intro, Replays, Map Viewer.
+- **Flask live-play console** (`tools/play_server.py`, `Dockerfile.console`) —
+  `/map` play with live difficulty knobs and snapshot-backed Undo / Checkpoint,
+  `/obs` observation builder, `/traces` rollout scrubber.
+- **Rollout viewer** (`tools.rollout_view.live_server`) — game state beside the
+  exact LLM input per turn, plus `/browse` and the `/dashboard` stats view.
 
-This needs the engine built locally (`bash nethack_core/build_engine.sh`), which
-requires a Linux/GNU toolchain. **On macOS** the engine does not build natively
-(AppleClang/Mach-O vs the fork's GNU-toolchain arena interposition), so run the
-console in Docker instead:
+Setup and run instructions are in that repo's README. It depends on this one
+(`nethack-core` as a git dependency); nothing here imports it back.
 
-```bash
-# build once (on Apple Silicon this is a NATIVE arm64 build — fast, no emulation;
-# do NOT use --platform linux/amd64, which deadlocks NetHack's mid-build helpers
-# under qemu). On Intel macOS drop the --platform flag.
-docker build --platform linux/arm64 -f Dockerfile.console -t nethack-console .
-
-# run; open http://localhost:8080
-docker run --platform linux/arm64 --rm -it -p 8080:8080 nethack-console
-```
-
-`Dockerfile.console` builds `libnethack.so` from the submodule and adds Flask (the
-console dep). Recordings written inside the container are ephemeral; add
-`-v "$PWD/<dir>":/opt/nethack-console/<dir>` to persist them. If host port 8080 is
-taken, map another, e.g. `-p 5050:8080`.
-
-- **`/map`** — play NetHack in the browser; live difficulty-knob sliders, reset
-  knobs for floor generation, snapshot-backed **Undo** (Backspace) and
-  **Checkpoint / Restore** (the live Monte-Carlo demo: pin a position, roll
-  forward, snap back, re-roll).
-- **`/obs`** — build an observation in any encoding and plot metrics over a run.
-- **`/traces`** — scrub a recorded rollout turn by turn, game state beside the
-  exact LLM input.
-
-## Rollout viewer
-
-`tools.rollout_view.live_server` serves a localhost UI for browsing recorded
-rollouts and stepping a fresh one live — two panes per turn: the **game state**
-(the tty grid the human sees) and the exact **LLM input** (the chosen encoding).
-
-```bash
-# server binds 127.0.0.1:8765; runs-root is scanned for recorded rollouts
-PYTHONPATH="$PWD:$PWD/environments/nethack" \
-  python -m tools.rollout_view.live_server \
-  --runs-root environments/nethack/outputs/evals --port 8765
-
-# generate keyless demo traces first if you have no recorded runs:
-PYTHONPATH="$PWD:$PWD/environments/nethack" \
-  python -m tools.rollout_view.demo --variants B1 JSON IMG
-```
-
-It also serves **`/browse`** (a Finder-style click-through of the runs folder)
-and **`/dashboard?path=<rel>`** (a stats dashboard: KPI strip, per-run outcome
-table, and inline dlvl/HP/XP/kills time-series). The dashboard is also a CLI
-(`python -m tools.rollout_view.dashboard …`); metrics are computed post-hoc over
-saved traces and are extensible via `stats.register_metric(name, fn)`.
-
-All eval/rollout output lives under `environments/nethack/outputs/` (gitignored);
-point `prime eval --output-dir` at `environments/nethack/outputs/evals/<name>` so
-runs persist and show up in the viewer.
+> The site used to be published from this repo. It is not any more —
+> `deploy/pages-redirect/` forwards this repo's old Pages URL to the console.
+> See [`deploy/pages-redirect/README.md`](deploy/pages-redirect/README.md).
 
 ## Architecture
 
 A `uv` workspace whose layers separate the bare environment (for RL algorithms)
 from the full harness (for chat-based LLM agents) over the same engine. See
-[`docs/REPO_MAP.md`](docs/REPO_MAP.md) for the full map and the turn-by-turn data
+[`docs/REPO_MAP.md`](https://github.com/liujonathan24/NetHack-hub/blob/main/docs/REPO_MAP.md) for the full map and the turn-by-turn data
 flow.
 
 - **`nethack_core/`** — interface-agnostic substrate. The ctypes binding
@@ -161,13 +130,16 @@ flow.
 - **`nethack_interface/`** — a typed, pysc2-style interface: `Observation` /
   `Action` / specs, with the action schema derived from the skill registry and a
   raw action-index escape hatch.
-- **`environments/nethack/`** — the verifiers wrapper for the Prime Hub
-  (`nethack.py: load_environment`) plus the `nethack_harness/` package (prompt
-  variants, curriculum, skills, navigation, memory, refiner).
-- **`approaches/`** — standalone agent strategies (go-explore, voyager, rlm,
-  continuous-harness).
-- **`tools/`** — the web console, knob-GIF renderer, rollout viewer + stats
-  dashboard, and the encoding-comparison harness.
+Layers above the engine live in other repos since #44:
+
+- **`environments/nethack/`** *(in `NetHack-hub`)* — the verifiers wrapper for
+  the Prime Hub (`nethack.py: load_environment`) plus the `nethack_harness/`
+  package (prompt variants, curriculum, skills, navigation, memory, refiner).
+- **`approaches/`** *(in `NetHack-hub`)* — standalone agent strategies
+  (go-explore, voyager, rlm, continuous-harness).
+- **`tools/`** *(in `NetHack-hub`, console parts in `NetHack-console`)* — the
+  knob-GIF renderer and encoding-comparison harness; the web console and rollout
+  viewer + stats dashboard.
 
 ## Getting started
 
@@ -184,11 +156,17 @@ bash nethack_core/build_engine.sh   # -> third_party/NetHack/src/build/libnethac
 # workspace deps and a bare `uv sync` under-installs.
 uv sync --extra dev --all-packages
 
-# smoke test (no API keys)
-pytest tests/ -q                # ~396 tests across 53 files
+# smoke test (no API keys) — the engine suite, 8 files
+pytest tests/ -q
+```
 
-# smoke test the verifiers wrapper against the Hub-deployed env
-# (needs OPENAI_API_KEY or PI_API_KEY)
+The harness-level checks and the `vf-eval` / `prime eval` recipes moved with the
+harness — run them from
+[`NetHack-hub`](https://github.com/liujonathan24/NetHack-hub), which carries
+`environments/`, `configs/endpoints.toml`, and the rest:
+
+```bash
+# in NetHack-hub (needs OPENAI_API_KEY or PI_API_KEY)
 vf-eval nethack -m gpt-4.1-mini -n 1 -r 1 \
   -a '{"tier": "corridor_explore"}' --endpoints configs/endpoints.toml
 
@@ -200,7 +178,7 @@ prime eval jonathanliu/nethack -m Qwen/Qwen3.5-9B -n 1 -r 1 \
 **Key CLI gotcha**: pass env config via `-a` (env-args, goes to
 `load_environment`), NOT `-x` (extra-env-kwargs). `interface="code"` via `-x` is
 silently ignored because the tool list is baked at construction time. See
-[`docs/EVAL_RECIPES.md`](docs/EVAL_RECIPES.md).
+[`docs/EVAL_RECIPES.md`](https://github.com/liujonathan24/NetHack-hub/blob/main/docs/EVAL_RECIPES.md).
 
 ## Configuring a rollout
 
@@ -256,6 +234,9 @@ Rewards are always `scout_reward` + `descent_reward` + `success_reward` +
 
 ## Publishing to the Prime Intellect Environments Hub
 
+Run from [`NetHack-hub`](https://github.com/liujonathan24/NetHack-hub) — the env
+package and `tools/bundle_for_hub.py` live there now:
+
 ```bash
 uv tool install prime
 prime login
@@ -271,9 +252,8 @@ wheel is self-contained.
 
 ## Branch layout
 
-- **`main`** — the clean public tree: engine + harness code, the demo GIFs, and
-  curated docs (`docs/`).
-- **[`experimental`](https://github.com/liujonathan24/NetHackHarness/tree/experimental)**
+- **`main`** — the clean public tree.
+- **[`experimental`](https://github.com/liujonathan24/NetHack-engine/tree/experimental)**
   — everything on `main` plus the internal process artifacts: the OpenSpec
   capability specs and change history (`openspec/`), per-fix onboarding
   walkthroughs (`docs/onboarding/`), the regression experiment suite
@@ -284,7 +264,7 @@ wheel is self-contained.
 
 **Env v0.0.66+ on the Hub.** Default is the standard NetHack ascension game
 (`full_nle`) on the fork engine; curriculum tiers and the difficulty/generation
-knobs are opt-in overrides. Default variant `B1`. ~396 tests green. Active
+knobs are opt-in overrides. Default variant `B1`. Engine tests green. Active
 research axis: observation-encoding comparison across ASCII / IMG / IMG_TTY /
 JSON / TOON, and continual-harness self-refinement.
 
