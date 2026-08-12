@@ -1,0 +1,43 @@
+name: Deploy Pages redirect
+
+# This repo no longer hosts the browser console — it lives in, and is published
+# from, https://github.com/liujonathan24/NetHack-console. All this workflow
+# publishes is deploy/pages-redirect/, a two-file site that forwards the old
+# Pages URL to the new one so existing links keep working.
+#
+# Replaces deploy-wasm-pages.yml, which pointed at deploy/wasm-web/ — a
+# directory removed from this repo in #44. Every run of it since then failed
+# with "tar: deploy/wasm-web: Cannot open: No such file or directory".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/pages-redirect/**"
+      - ".github/workflows/deploy-pages-redirect.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress run.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: deploy/pages-redirect
+      - id: deployment
+        uses: actions/deploy-pages@v4

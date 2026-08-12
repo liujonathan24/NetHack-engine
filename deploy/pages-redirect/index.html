@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetHack Console has moved</title>
+  <link rel="canonical" href="https://liujonathan24.github.io/NetHack-console/">
+  <meta http-equiv="refresh" content="0; url=https://liujonathan24.github.io/NetHack-console/">
+  <meta name="robots" content="noindex">
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: #15161c; color: #d7d8e0; text-align: center;
+      font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      padding: 1.5rem;
+    }
+    .glyph { color: #ffe08a; }
+    a { color: #ffe08a; }
+    p { max-width: 46ch; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1><span class="glyph">@</span> NetHack Console has moved</h1>
+    <p>
+      The browser console is now published from the
+      <a href="https://github.com/liujonathan24/NetHack-console">NetHack-console</a>
+      repository. This repo (<code>NetHack-engine</code>) is the engine only.
+    </p>
+    <p>
+      Redirecting to
+      <a href="https://liujonathan24.github.io/NetHack-console/">liujonathan24.github.io/NetHack-console/</a>
+      &hellip;
+    </p>
+  </main>
+  <script>
+    // Carry the requested path across, so deep links such as /play.html and
+    // /replays.html land on their counterpart instead of the new front page.
+    // Only same-shape paths are forwarded; anything else falls back to the root.
+    (function () {
+      var base = "https://liujonathan24.github.io/NetHack-console/";
+      var path = location.pathname.replace(/^\/NetHack-engine\//, "");
+      // Forward only a plain relative path: no leading slash, no "..", nothing
+      // outside [A-Za-z0-9_./-]. Anything else goes to the front page.
+      var ok = path !== "" && /^[\w.-]+(\/[\w.-]+)*$/.test(path) && path.indexOf("..") === -1;
+      location.replace((ok ? base + path : base) + location.search + location.hash);
+    })();
+  </script>
+</body>
+</html>
