@@ -350,32 +350,77 @@ class EngineEnv:
         pathlib.Path(path).write_bytes(self._engine.save_player())
 
     def checkpoint(self, path) -> None:
-        """Write a resumable checkpoint = seed + level blob + player blob.
+        """Write a resumable checkpoint = seed + level blob + player blob +
+        the whole off-current dungeon-level file set.
 
         The seed lets resume() reproduce object appearances/ids; the level and
         player blobs are the floor + hero.
+
+        ``levelfiles`` is NOT optional.  ``save_player`` runs ``savegamestate``
+        -> ``save_dungeon`` (dungeon.c:175), which serializes the entire
+        ``level_info[]`` array — so the resumed heap believes in every level the
+        original game had visited.  Resuming into a fresh, empty hackdir without
+        those files makes the first stair transition open a level file that is
+        not there, which NetHack turns into ``done(TRICKED)``: a full-HP
+        game-over that looks exactly like a monster kill downstream.  See
+        :class:`nethack_core._engine.CheckpointIntegrityError`.
         """
         data = {
             "seed": list(self._current_seeds),
             "level": base64.b64encode(self._engine.save_level()).decode(),
             "player": base64.b64encode(self._engine.save_player()).decode(),
+            "levelfiles": base64.b64encode(self._engine.save_levelfiles()).decode(),
         }
         pathlib.Path(path).write_text(json.dumps(data))
 
     def resume(self, path) -> CoreObservation:
         """Restore a checkpoint: reset to its seed (so object appearances/ids
-        match), install the level, then the hero, then render once.
+        match), install the dungeon's level files, then the level, then the
+        hero, then render once.
 
         Honors the hard ordering contract: load_level_raw before
         load_player_raw, then a single step(18) render.  Returns the obs.
+
+        The level FILES go in LAST, after both blobs and before the render.
+        They cannot go in first: ``nle_load_level`` stamps the level blob over
+        ``<lock>.<ledger_no(u.uz)>``, and at that point ``u.uz`` is still the
+        freshly-reset level 1 — so installing first means the level-1 file gets
+        overwritten with the checkpoint's floor, and returning to level 1 later
+        reads a file whose dlvl header says something else, which
+        ``getlev`` answers with ``trickery()`` -> ``done(TRICKED)``: another
+        full-HP fake death (restore.c:1171).
+
+        Raises :class:`CheckpointIntegrityError` if the resumed heap still
+        references a level file that is not on disk.
         """
         d = json.loads(pathlib.Path(path).read_text())
         core, disp = d["seed"]
         self.reset(seeds=(int(core), int(disp)))
+        # Dismiss the fresh game's welcome --More-- BEFORE loading anything.
+        # Otherwise the single ctrl-R below is eaten by that prompt instead of
+        # running docrt(), and the returned observation keeps showing the
+        # reset's level-1 starting room while blstats describe the checkpoint's
+        # floor: a map/status mismatch that the old gold+depth smoke test could
+        # not see. ESC (not CR) because ESC is a no-op in command context.
+        self._engine.step(27)
         self._engine.load_level_raw(base64.b64decode(d["level"]))   # LEVEL first
         self._engine.load_player_raw(base64.b64decode(d["player"]))  # THEN player
+        lf = d.get("levelfiles")
+        if lf:  # ...and the off-current dungeon LAST (see above)
+            self._engine.load_levelfiles(base64.b64decode(lf))
         self._engine.step(18)  # single two-phase render after BOTH
+        self._engine.check_level_file_integrity("after resume")
         return self._engine.to_core_observation()
+
+    # ----- level-file integrity (see CheckpointIntegrityError) -----
+
+    def missing_level_files(self) -> int:
+        """Ledgers flagged ``LFILE_EXISTS`` whose level file is absent."""
+        return self._engine.missing_level_files()
+
+    def check_level_file_integrity(self, where: str = "") -> None:
+        """Raise ``CheckpointIntegrityError`` if any level file is missing."""
+        self._engine.check_level_file_integrity(where)
 
     # ----- difficulty knobs -----
 
