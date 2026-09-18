@@ -28,6 +28,26 @@ class CheckpointIntegrityError(RuntimeError):
     """
 
 
+#: Sentinel for start(ttyrec=...): default on, writing into the temp hackdir.
+#: Pass an explicit path to place it elsewhere, or None to record nothing.
+_TTYREC_DEFAULT = object()
+
+#: The engine takes a FILE*, so the handle has to come from the same libc it
+#: links against; ctypes.CDLL(None) resolves against the process's globals.
+_libc = ctypes.CDLL(None)
+_libc.fopen.restype = ctypes.c_void_p
+_libc.fopen.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+_libc.fclose.restype = ctypes.c_int
+_libc.fclose.argtypes = [ctypes.c_void_p]
+
+
+def _fopen(path: str, mode: str):
+    fp = _libc.fopen(str(path).encode(), mode.encode())
+    if not fp:
+        raise OSError(f"could not open ttyrec {path!r} for writing")
+    return ctypes.c_void_p(fp)
+
+
 def _engine_build_dir() -> "Path | None":
     """Locate ``third_party/NetHack/src/build`` by walking up from this file.
 
@@ -295,6 +315,8 @@ class RawEngine:
         #: read directly from the shared source dat (settings.datadir), so this
         #: holds only the few small game-state files — no 3.7MB copy per reset.
         self._hackdir = None
+        self._ttyrec_fp = None
+        self._ttyrec_path = None
         #: Writable templates the engine appends to (scores/logs/lock). Seeded
         #: empty in the writable dir on each reset so every game starts clean —
         #: matching the empty templates the old per-reset copytree provided.
@@ -483,7 +505,7 @@ class RawEngine:
             pass
 
     def start(self, core: int, disp: int, tune: dict = None,
-              character: str = None) -> "RawEngine":
+              character: str = None, ttyrec=_TTYREC_DEFAULT) -> "RawEngine":
         """Start a new game.  Returns self so callers can chain property reads.
 
         Safe to call while a game is already active — tears down the previous
@@ -519,7 +541,12 @@ class RawEngine:
         settings.options = options_bytes
         settings.wizkit = b""
         settings.spawn_monsters = 1
-        settings.ttyrecname = b""
+        # Recording is on by default. The engine cuts the file back to the
+        # snapshot on every restore, so a rewound game still reads as one
+        # uninterrupted recording.
+        ttyrec_path = (os.path.join(self._hackdir, "nethack.ttyrec.bz2")
+                       if ttyrec is _TTYREC_DEFAULT else ttyrec)
+        settings.ttyrecname = (ttyrec_path or "").encode()
 
         # Apply start-time difficulty-knob overrides (generation knobs must be
         # set before the starting level is built). tune_n == 0 => vanilla.
@@ -542,9 +569,11 @@ class RawEngine:
         seeds.reseed = b"\x00"  # False — deterministic
 
         self._obs.action = 0
+        self._ttyrec_path = ttyrec_path
+        self._ttyrec_fp = _fopen(ttyrec_path, "wb") if ttyrec_path else None
         self._ctx = self._lib.nle_start(
             ctypes.byref(self._obs),
-            None,
+            self._ttyrec_fp,
             ctypes.byref(seeds),
             ctypes.byref(settings),
         )
@@ -601,6 +630,9 @@ class RawEngine:
         removes it.
         """
         self._teardown_ctx()
+        if self._ttyrec_fp is not None:
+            _libc.fclose(self._ttyrec_fp)
+            self._ttyrec_fp = None
         if self._hackdir is not None:
             shutil.rmtree(self._hackdir, ignore_errors=True)
             self._hackdir = None
