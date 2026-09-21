@@ -146,6 +146,12 @@ class EngineEnv:
         core, disp = self._pending_seeds
         self._engine.start(core, disp, tune=tune, character=character)
         self._current_seeds = self._pending_seeds
+        # Remembered so a checkpoint can record the role this game runs and a
+        # restore can reset with the same one (None = the engine's default
+        # role). A restore that resets with a different role loads the hero
+        # struct over foreign role-initialised globals; measured 2026-09-21 as
+        # a Valkyrie restored over a default game playing at armor class 0.
+        self.last_character = character
         self._pending_seeds = None
         meta = EpisodeMetadata(
             seeds=self._current_seeds,
