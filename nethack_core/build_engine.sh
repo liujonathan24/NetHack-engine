@@ -22,7 +22,9 @@ BUILD="$SRC/build"
 if [ ! -f "$BUILD/CMakeCache.txt" ] || \
    ! grep -q "^CMAKE_HOME_DIRECTORY:INTERNAL=$SRC\$" "$BUILD/CMakeCache.txt"; then
   rm -rf "$BUILD"
-  cmake -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=RelWithDebInfo
+  # The engine needs no Python: skip the fork's pybind11 modules (and the
+  # Python-headers requirement that comes with them).
+  cmake -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNLE_BUILD_PYTHON=OFF
 fi
 cmake --build "$BUILD" --target nethack -j"${JOBS:-8}"
 
