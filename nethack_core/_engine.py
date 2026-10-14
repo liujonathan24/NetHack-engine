@@ -168,6 +168,8 @@ class NleSeedsInit(ctypes.Structure):
 
 
 NLE_TUNE_MAX = 64
+# The game's clock, 2000-01-11 12:00:00 UTC: daytime, moon phase 2, not Friday the 13th.
+FIXED_TIME = 947592000
 
 
 class NleSettings(ctypes.Structure):
@@ -188,6 +190,7 @@ class NleSettings(ctypes.Structure):
         # writable game-state files live under hackdir — so no per-reset copy of
         # the ~3.7MB dat tree is needed. Empty => every prefix uses hackdir.
         ("datadir", ctypes.c_char * 256),
+        ("fixed_time", ctypes.c_long),
     ]
 
 
@@ -520,6 +523,7 @@ class RawEngine:
         settings.wizkit = b""
         settings.spawn_monsters = 1
         settings.ttyrecname = b""
+        settings.fixed_time = FIXED_TIME
 
         # Apply start-time difficulty-knob overrides (generation knobs must be
         # set before the starting level is built). tune_n == 0 => vanilla.
