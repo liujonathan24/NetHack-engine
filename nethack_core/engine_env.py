@@ -50,11 +50,13 @@ __all__ = ["EngineEnv", "CheckpointAtPromptError", "CheckpointIntegrityError"]
 
 
 class CheckpointAtPromptError(RuntimeError):
-    """checkpoint() was called while a prompt is open or the game is over.
+    """checkpoint() was called while a prompt is open, inside a command, or
+    after the game is over.
 
     The blobs hold the game at a command boundary only: an open --More--,
-    menu, y/n or text prompt (and the helpless turns behind it) is not in
-    them, so such a checkpoint could not resume exactly.
+    menu, y/n or text prompt (and the helpless turns behind it), a count,
+    a prefix key, a cursor (travel, farlook) or an extended command being
+    typed is not in them, so such a checkpoint could not resume exactly.
     """
 
 
@@ -377,13 +379,15 @@ class EngineEnv:
     def checkpoint(self, path) -> None:
         """Write a resumable checkpoint = seed + character + tune + modify +
         level blob + player blob + the whole off-current dungeon-level file set
-        + the RNG blob.
+        + the RNG blob + the display mirror.
 
         The seed lets resume() reproduce object appearances/ids; the character
         and tune knobs let it reset the same game (role_init, the knobs the
         play code reads); the level and player blobs are the floor + hero; the
         RNG blob is both random streams, so play after resume() draws the same
-        numbers as the straight game.
+        numbers as the straight game; the display mirror is the window port's
+        glyph planes and inventory cache, so the cells the resume render does
+        not draw (and the hallucinated inventory glyphs) match too.
 
         ``levelfiles`` is NOT optional.  ``save_player`` runs ``savegamestate``
         -> ``save_dungeon`` (dungeon.c:175), which serializes the entire
@@ -395,7 +399,9 @@ class EngineEnv:
         :class:`nethack_core._engine.CheckpointIntegrityError`.
 
         Raises :class:`CheckpointAtPromptError` while a prompt is open (the
-        misc plane of the last observation) or when the game is over.
+        misc plane of the last observation), while a command is being read
+        (count, prefix, cursor, ^A, extended command: the engine's
+        command-boundary flag) or when the game is over.
         """
         if self._engine.done:
             raise CheckpointAtPromptError(
@@ -407,6 +413,11 @@ class EngineEnv:
                 raise CheckpointAtPromptError(
                     f"checkpoint refused: a {what} is open; a checkpoint is "
                     "possible only at a command boundary")
+        if not self._engine.at_command_boundary:
+            raise CheckpointAtPromptError(
+                "checkpoint refused: a command is being read (a count, prefix, "
+                "cursor, ^A or extended-command key is pending); a checkpoint is "
+                "possible only at a command boundary")
         data = {
             "seed": list(self._current_seeds),
             "character": self._character,
@@ -416,6 +427,7 @@ class EngineEnv:
             "player": base64.b64encode(self._engine.save_player()).decode(),
             "levelfiles": base64.b64encode(self._engine.save_levelfiles()).decode(),
             "rng": base64.b64encode(self._engine.save_rng()).decode(),
+            "mirror": base64.b64encode(self._engine.save_mirror()).decode(),
         }
         pathlib.Path(path).write_text(json.dumps(data))
 
@@ -443,6 +455,10 @@ class EngineEnv:
 
         Raises :class:`CheckpointIntegrityError` if the resumed heap still
         references a level file that is not on disk.
+
+        Right after the return the message line is empty (the render does
+        not repeat the checkpoint's last message); every other field matches
+        the straight game, and every field does from the first key on.
         """
         d = json.loads(pathlib.Path(path).read_text())
         core, disp = d["seed"]
@@ -455,7 +471,11 @@ class EngineEnv:
         # reset's level-1 starting room while blstats describe the checkpoint's
         # floor: a map/status mismatch that the old gold+depth smoke test could
         # not see. ESC (not CR) because ESC is a no-op in command context.
-        self._engine.step(27)
+        # A full moon or Friday the 13th adds a --More-- of its own.
+        for _ in range(4):
+            self._engine.step(27)
+            if not self._engine.misc[2]:
+                break
         self._engine.load_level_raw(base64.b64decode(d["level"]))   # LEVEL first
         self._engine.load_player_raw(base64.b64decode(d["player"]))  # THEN player
         lf = d.get("levelfiles")
@@ -463,8 +483,11 @@ class EngineEnv:
             self._engine.load_levelfiles(base64.b64decode(lf))
         self._engine.step(18)  # single two-phase render after BOTH
         rng = d.get("rng")
-        if rng:  # last: the render may draw on the display stream
+        if rng:  # after the render: it draws on the display stream
             self._engine.load_rng(base64.b64decode(rng))
+        mirror = d.get("mirror")
+        if mirror:  # after the render: it redraws the planes
+            self._engine.load_mirror(base64.b64decode(mirror))
         self._engine.check_level_file_integrity("after resume")
         return self._engine.to_core_observation()
 
