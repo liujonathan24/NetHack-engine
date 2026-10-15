@@ -242,3 +242,41 @@ def test_warning_glyphs_after_resume(tmp_path):
         o2, _, _ = env2.step(k)
         bad = [f for f in W.FIELDS if f != "inv_glyphs" and W.digests(o2)[f] != straight[i][0][f]]
         assert not bad, (i, bad)
+
+
+def test_stale_line_of_sight_after_resume(tmp_path):
+    """goto_depth seats the hero on the downstair without a vision recalc: until he
+    moves he sees from where he arrived. The resume render must not see afresh
+    from the stair (a kick at empty space then wakes and moves monsters differently)."""
+    env = EngineEnv()
+    env.reset(seeds=(1498193714, 710025541), character="Rog-hum-cha-mal", modify={"goto_depth": 3})
+    env.step(27)
+    env.checkpoint(tmp_path / "ck.json")
+    keys = [4, ord("h"), 4, ord("j"), 4, ord("k"), 4, ord("l")] + list(b"ssssssssss")
+    straight = [W.digests(env.step(k)[0]) for k in keys]
+    env2 = EngineEnv()
+    env2.resume(tmp_path / "ck.json")
+    for i, k in enumerate(keys):
+        o2, _, _ = env2.step(k)
+        bad = [f for f in W.FIELDS if W.digests(o2)[f] != straight[i][f]]
+        assert not bad, (i, bad)
+
+
+def test_version3_tail_still_resumes(tmp_path):
+    """A player blob whose tail has no line of sight (version 3) loads."""
+    env, o = boundary_env()
+    env.checkpoint(tmp_path / "ck.json")
+    d = json.loads((tmp_path / "ck.json").read_text())
+    blob = base64.b64decode(d["player"])
+    t = blob.rindex(b"NLEt")
+    n = int.from_bytes(blob[t + 5:t + 9], "little")
+    vision = 21 * 80 + 2 * 21
+    v3 = blob[:t + 4] + bytes([3]) + (n - vision).to_bytes(4, "little") + blob[t + 9:t + 9 + n - vision] + blob[t + 9 + n:]
+    d["player"] = base64.b64encode(v3).decode()
+    (tmp_path / "v3.json").write_text(json.dumps(d))
+    env2 = EngineEnv()
+    o2 = env2.resume(tmp_path / "v3.json")
+    assert W.status(o2) == W.status(o)
+    o3, _, _ = env.step(ord("s"))
+    o4, _, _ = env2.step(ord("s"))
+    assert W.digests(o3) == W.digests(o4)
