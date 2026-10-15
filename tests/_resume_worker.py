@@ -128,9 +128,11 @@ def resume(name, outdir, ckname):
         res["steps"] += 1
         bad = [f for f in FIELDS if digests(o)[f] != t["d"][f]]
         if bad and res["first_diff"] is None:
-            res["first_diff"] = {"step": t["step"], "fields": bad, "straight": t["st"], "resumed": status(o),
-                                 "straight_msg": t["msg"], "resumed_msg": msg(o)[:80]}
+            res["first_diff"] = {"step": t["step"], "key": t["key"], "fields": bad, "straight": t["st"],
+                                 "resumed": status(o), "straight_msg": t["msg"], "resumed_msg": msg(o)[:80]}
+        res["n_diff"] = res.get("n_diff", 0) + bool(bad)
         if done:
+            res["done_at"] = t["step"]
             break
     (outdir / f"resume_{ckname}.json").write_text(json.dumps(res))
 
