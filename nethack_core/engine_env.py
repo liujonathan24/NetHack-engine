@@ -101,6 +101,11 @@ class EngineEnv:
         self._current_seeds: Optional[tuple[int, int]] = None
         #: Default modify config applied on every reset() (unless reset overrides).
         self._default_modify = dict(modify) if modify else None
+        #: What the running game was started with; checkpoint() writes them and
+        #: resume() resets with them.
+        self._character: Optional[str] = None
+        self._tune: Optional[dict] = None
+        self._modify: Optional[dict] = None
         #: ``env.tune.get()`` / ``env.tune.set(**knobs)`` difficulty-knob view.
         self.tune = _TuneProxy(self._engine)
 
@@ -147,6 +152,8 @@ class EngineEnv:
         self._engine.start(core, disp, tune=tune, character=character)
         self._current_seeds = self._pending_seeds
         self._pending_seeds = None
+        self._character = character
+        self._tune = dict(tune) if tune else None
         meta = EpisodeMetadata(
             seeds=self._current_seeds,
             seed_hash=_hash_seeds(*self._current_seeds),
@@ -154,6 +161,7 @@ class EngineEnv:
         )
         obs = self._engine.to_core_observation()
         effective_modify = modify if modify is not None else self._default_modify
+        self._modify = dict(effective_modify) if effective_modify else None
         if effective_modify:
             obs = self.modify(**effective_modify)
         return obs, meta
@@ -350,11 +358,12 @@ class EngineEnv:
         pathlib.Path(path).write_bytes(self._engine.save_player())
 
     def checkpoint(self, path) -> None:
-        """Write a resumable checkpoint = seed + level blob + player blob +
-        the whole off-current dungeon-level file set.
+        """Write a resumable checkpoint = seed + character + tune + modify +
+        level blob + player blob + the whole off-current dungeon-level file set.
 
-        The seed lets resume() reproduce object appearances/ids; the level and
-        player blobs are the floor + hero.
+        The seed lets resume() reproduce object appearances/ids; the character
+        and tune knobs let it reset the same game (role_init, the knobs the
+        play code reads); the level and player blobs are the floor + hero.
 
         ``levelfiles`` is NOT optional.  ``save_player`` runs ``savegamestate``
         -> ``save_dungeon`` (dungeon.c:175), which serializes the entire
@@ -367,6 +376,9 @@ class EngineEnv:
         """
         data = {
             "seed": list(self._current_seeds),
+            "character": self._character,
+            "tune": self._tune,
+            "modify": self._modify,
             "level": base64.b64encode(self._engine.save_level()).decode(),
             "player": base64.b64encode(self._engine.save_player()).decode(),
             "levelfiles": base64.b64encode(self._engine.save_levelfiles()).decode(),
@@ -374,9 +386,14 @@ class EngineEnv:
         pathlib.Path(path).write_text(json.dumps(data))
 
     def resume(self, path) -> CoreObservation:
-        """Restore a checkpoint: reset to its seed (so object appearances/ids
-        match), install the dungeon's level files, then the level, then the
-        hero, then render once.
+        """Restore a checkpoint: reset to its seed, character and tune knobs
+        (so object appearances/ids and the role match), install the dungeon's
+        level files, then the level, then the hero, then render once.
+
+        The checkpoint's ``modify`` is kept for the record only: the hero and
+        the dungeon come from the blobs, so no mutation is re-applied. A
+        checkpoint without the character/tune keys resumes as before (default
+        character, vanilla knobs).
 
         Honors the hard ordering contract: load_level_raw before
         load_player_raw, then a single step(18) render.  Returns the obs.
@@ -395,7 +412,9 @@ class EngineEnv:
         """
         d = json.loads(pathlib.Path(path).read_text())
         core, disp = d["seed"]
-        self.reset(seeds=(int(core), int(disp)))
+        self.reset(seeds=(int(core), int(disp)), tune=d.get("tune"),
+                   modify={}, character=d.get("character"))
+        self._modify = d.get("modify")
         # Dismiss the fresh game's welcome --More-- BEFORE loading anything.
         # Otherwise the single ctrl-R below is eaten by that prompt instead of
         # running docrt(), and the returned observation keeps showing the
@@ -440,6 +459,11 @@ class EngineEnv:
     @property
     def current_seeds(self) -> Optional[tuple[int, int]]:
         return self._current_seeds
+
+    @property
+    def character(self) -> Optional[str]:
+        """The character string the running game was started with (None = default)."""
+        return self._character
 
     @property
     def engine(self) -> RawEngine:
