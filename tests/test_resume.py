@@ -7,6 +7,7 @@ after it. tests/_resume_worker.py is the one-process half of each test.
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import os
 import pathlib
@@ -245,11 +246,17 @@ def test_warning_glyphs_after_resume(tmp_path):
 
 
 def test_stale_line_of_sight_after_resume(tmp_path):
-    """goto_depth seats the hero on the downstair without a vision recalc: until he
-    moves he sees from where he arrived. The resume render must not see afresh
-    from the stair (a kick at empty space then wakes and moves monsters differently)."""
+    """A hero moved without a vision recalc sees from where he was until he moves.
+    The resume render must not see afresh from where he is (a kick at empty space
+    then wakes and moves monsters differently)."""
     env = EngineEnv()
     env.reset(seeds=(1498193714, 710025541), character="Rog-hum-cha-mal", modify={"goto_depth": 3})
+    lib, ctx = env.engine._lib, env.engine._ctx
+    lib.nle_anchor(ctypes.c_void_p(ctx))
+    lib.u_on_newpos(35, 13)
+    env.step(18)
+    lib.nle_anchor(ctypes.c_void_p(ctx))
+    lib.u_on_newpos(16, 5)
     env.step(27)
     env.checkpoint(tmp_path / "ck.json")
     keys = [4, ord("h"), 4, ord("j"), 4, ord("k"), 4, ord("l")] + list(b"ssssssssss")
