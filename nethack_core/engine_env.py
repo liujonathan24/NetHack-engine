@@ -34,6 +34,7 @@ import numpy as np
 
 from ._engine import (
     COLNO,
+    CheckpointIntegrityError,
     NLE_BLSTATS_SIZE,
     NLE_INVENTORY_SIZE,
     NLE_INVENTORY_STR_LENGTH,
@@ -44,6 +45,22 @@ from ._engine import (
     RawEngine,
 )
 from .env import CoreObservation, EpisodeMetadata
+
+__all__ = ["EngineEnv", "CheckpointAtPromptError", "CheckpointIntegrityError"]
+
+
+class CheckpointAtPromptError(RuntimeError):
+    """checkpoint() was called while a prompt is open or the game is over.
+
+    The blobs hold the game at a command boundary only: an open --More--,
+    menu, y/n or text prompt (and the helpless turns behind it) is not in
+    them, so such a checkpoint could not resume exactly.
+    """
+
+
+# misc plane index -> what is open (winrl.cc fill_obs)
+_PROMPTS = ((0, "y/n question (in_yn_function)"), (1, "text prompt (in_getlin)"),
+            (2, "--More-- or menu (xwaitingforspace)"))
 
 
 class _TuneProxy:
@@ -376,7 +393,20 @@ class EngineEnv:
         not there, which NetHack turns into ``done(TRICKED)``: a full-HP
         game-over that looks exactly like a monster kill downstream.  See
         :class:`nethack_core._engine.CheckpointIntegrityError`.
+
+        Raises :class:`CheckpointAtPromptError` while a prompt is open (the
+        misc plane of the last observation) or when the game is over.
         """
+        if self._engine.done:
+            raise CheckpointAtPromptError(
+                "checkpoint refused: the game is over; a checkpoint is possible "
+                "only at a command boundary")
+        misc = self._engine.misc
+        for i, what in _PROMPTS:
+            if misc[i]:
+                raise CheckpointAtPromptError(
+                    f"checkpoint refused: a {what} is open; a checkpoint is "
+                    "possible only at a command boundary")
         data = {
             "seed": list(self._current_seeds),
             "character": self._character,

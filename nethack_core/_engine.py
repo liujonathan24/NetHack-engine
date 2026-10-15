@@ -1165,6 +1165,11 @@ class RawEngine:
         return self._message  # already (256,)
 
     @property
+    def misc(self) -> np.ndarray:
+        """(in_yn_function, in_getlin, xwaitingforspace) of the last observation."""
+        return self._misc  # already (3,)
+
+    @property
     def done(self) -> bool:
         """True once the current game has ended (death, escape, quit, ...)."""
         return bool(self._obs.done)
