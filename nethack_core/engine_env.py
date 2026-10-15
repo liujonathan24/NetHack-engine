@@ -359,11 +359,14 @@ class EngineEnv:
 
     def checkpoint(self, path) -> None:
         """Write a resumable checkpoint = seed + character + tune + modify +
-        level blob + player blob + the whole off-current dungeon-level file set.
+        level blob + player blob + the whole off-current dungeon-level file set
+        + the RNG blob.
 
         The seed lets resume() reproduce object appearances/ids; the character
         and tune knobs let it reset the same game (role_init, the knobs the
-        play code reads); the level and player blobs are the floor + hero.
+        play code reads); the level and player blobs are the floor + hero; the
+        RNG blob is both random streams, so play after resume() draws the same
+        numbers as the straight game.
 
         ``levelfiles`` is NOT optional.  ``save_player`` runs ``savegamestate``
         -> ``save_dungeon`` (dungeon.c:175), which serializes the entire
@@ -382,6 +385,7 @@ class EngineEnv:
             "level": base64.b64encode(self._engine.save_level()).decode(),
             "player": base64.b64encode(self._engine.save_player()).decode(),
             "levelfiles": base64.b64encode(self._engine.save_levelfiles()).decode(),
+            "rng": base64.b64encode(self._engine.save_rng()).decode(),
         }
         pathlib.Path(path).write_text(json.dumps(data))
 
@@ -392,8 +396,8 @@ class EngineEnv:
 
         The checkpoint's ``modify`` is kept for the record only: the hero and
         the dungeon come from the blobs, so no mutation is re-applied. A
-        checkpoint without the character/tune keys resumes as before (default
-        character, vanilla knobs).
+        checkpoint without the character/tune/rng keys resumes as before
+        (default character, vanilla knobs, a fresh random stream).
 
         Honors the hard ordering contract: load_level_raw before
         load_player_raw, then a single step(18) render.  Returns the obs.
@@ -428,6 +432,9 @@ class EngineEnv:
         if lf:  # ...and the off-current dungeon LAST (see above)
             self._engine.load_levelfiles(base64.b64decode(lf))
         self._engine.step(18)  # single two-phase render after BOTH
+        rng = d.get("rng")
+        if rng:  # last: the render may draw on the display stream
+            self._engine.load_rng(base64.b64decode(rng))
         self._engine.check_level_file_integrity("after resume")
         return self._engine.to_core_observation()
 

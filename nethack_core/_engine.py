@@ -381,6 +381,14 @@ class RawEngine:
         lib.nle_save_player.restype = ctypes.c_void_p
         lib.nle_load_player.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
         lib.nle_load_player.restype = ctypes.c_int
+        # Both RNG streams (core + display) as one blob. These take no ctx:
+        # they read the one the last engine call on this thread anchored.
+        lib.nle_rng_blob_size.argtypes = []
+        lib.nle_rng_blob_size.restype = ctypes.c_size_t
+        lib.nle_rng_save.argtypes = [ctypes.c_void_p]
+        lib.nle_rng_save.restype = None
+        lib.nle_rng_load.argtypes = [ctypes.c_void_p]
+        lib.nle_rng_load.restype = None
 
         # Difficulty knob catalog.  nle_get_tune returns nle_tune_t*, which is a
         # flat block of doubles indexed by the name table — so get/set are fully
@@ -898,6 +906,26 @@ class RawEngine:
     # ------------------------------------------------------------------
     # Secure state mutation (single field) + deferred dungeon-level jump
     # ------------------------------------------------------------------
+
+    def save_rng(self) -> bytes:
+        """Both RNG streams (core + display) of this game as one blob."""
+        self._anchor()
+        buf = ctypes.create_string_buffer(int(self._lib.nle_rng_blob_size()))
+        self._lib.nle_rng_save(buf)
+        return buf.raw
+
+    def load_rng(self, blob: bytes) -> "RawEngine":
+        """Install a save_rng() blob: the next random draw continues that stream."""
+        size = int(self._lib.nle_rng_blob_size())
+        if len(blob) != size:
+            raise ValueError(f"RNG blob is {len(blob)} bytes, expected {size}")
+        self._anchor()
+        self._lib.nle_rng_load(ctypes.create_string_buffer(blob, size))
+        return self
+
+    def _anchor(self) -> None:
+        # a read-only call that anchors this ctx on the thread (nle_rng_* have no ctx argument)
+        self._lib.nle_hero_on_stair(self._ctx)
 
     def set_state(self, field: str, value: int) -> "RawEngine":
         """Set a single whitelisted state field on the engine.  Returns self.
