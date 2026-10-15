@@ -6,6 +6,7 @@ after it. tests/_resume_worker.py is the one-process half of each test.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import pathlib
@@ -62,7 +63,6 @@ def test_resume_is_exact(name, tmp_path):
     assert res["character"] == sc["character"]
 
 
-@pytest.mark.xfail(strict=True, reason="NetHack side: the hero's movement points are not in the player blob yet")
 def test_fast_monk_eight_checkpoints(tmp_path):
     trace, results = two_process("monk_fast", tmp_path)
     assert len(results) == 8
@@ -70,7 +70,6 @@ def test_fast_monk_eight_checkpoints(tmp_path):
         assert_exact(res, 100)
 
 
-@pytest.mark.xfail(strict=True, reason="NetHack side: shopkeeper residency is not relinked on the loaded level yet")
 @pytest.mark.parametrize("name", ["shop", "shop_b"])
 def test_shop_level(name, tmp_path):
     trace, results = two_process(name, tmp_path)
@@ -128,6 +127,8 @@ def test_old_format_checkpoint_still_resumes(tmp_path):
     env.checkpoint(tmp_path / "new.json")
     d = json.loads((tmp_path / "new.json").read_text())
     old = {k: d[k] for k in ("seed", "level", "player", "levelfiles")}
+    blob = base64.b64decode(d["player"])  # cut the per-game tail too
+    old["player"] = base64.b64encode(blob[:blob.rindex(b"NLEt")]).decode()
     (tmp_path / "old.json").write_text(json.dumps(old))
     env2 = EngineEnv()
     o2 = env2.resume(tmp_path / "old.json")
