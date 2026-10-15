@@ -140,9 +140,11 @@ def features(outdir):
     mons = {int(glyphs.glyph_to_mon(x)) for x in g[glyphs.glyph_is_normal_monster(g)]}
     ch = np.asarray(o.chars)
     dlvl0, dlvl = trace["recs"][0]["st"]["dlvl"], trace["recs"][ck]["st"]["dlvl"]
+    tail = trace["recs"][ck + 1:]
     f = {"shop": PM["shopkeeper"] in mons, "temple": PM["aligned priest"] in mons,
          "fountain": bool((ch == ord("{")).any()), "altar": bool((ch == ord("_")).any()), "dlvl": dlvl,
-         "stairs": spec["entry"] == "stairs" and dlvl0 == spec["depth"] - 1 and dlvl == spec["depth"]}
+         "stairs": spec["entry"] == "stairs" and dlvl0 == spec["depth"] - 1 and dlvl == spec["depth"],
+         "death": trace["done_at"] is not None, "engraving": any("You read:" in t["msg"] for t in tail)}
     (outdir / "features.json").write_text(json.dumps(f))
 
 
@@ -272,11 +274,11 @@ def summarize(results, **meta):
                 results=results)
 
 
-def _case(i, seed, expect=()):
-    return dict(make_case(i, seed), expect=list(expect))
+def _case(i, seed, expect=(), tune=False):
+    return dict(make_case(i, seed, tune=tune), expect=list(expect))
 
 
-DEFAULT_CASES = [_case(i, 7, expect=e) for i, e in ((15, ["shop"]), (34, ["stairs"]), (0, ["fountain"]), (40, []), (3, []), (17, []), (31, []), (45, []), (7, []), (22, []), (36, []), (50, []))]
+DEFAULT_CASES = [_case(i, 7, expect=e) for i, e in ((15, ["shop"]), (34, ["stairs"]), (0, ["fountain"]), (40, []), (3, []), (17, []), (44, ["engraving"]), (45, []), (7, []), (22, ["death"]), (36, []), (50, []))] + [_case(64, 7, tune=True)]
 
 
 if __name__ == "__main__":

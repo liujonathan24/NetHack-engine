@@ -1,4 +1,4 @@
-"""Random-play checkpoint/resume fuzz: the 12 fixed cases of tests/_resume_fuzz.py.
+"""Random-play checkpoint/resume fuzz: the 13 fixed cases of tests/_resume_fuzz.py.
 
 Each case plays a random mix of commands in one process, checkpoints at a
 random command boundary, then the tail of 300 keys must match field for
@@ -13,11 +13,12 @@ CASES = F.DEFAULT_CASES
 
 
 def test_default_cases_cover_the_space():
-    assert len(CASES) == 12
-    assert len({c["role"] for c in CASES}) == 12
+    assert len(CASES) == 13
+    assert len({c["role"] for c in CASES}) == 13
     assert {c["depth"] for c in CASES} == {1, 2, 3, 4}
+    assert any(c["tune"] for c in CASES)
     wanted = {w for c in CASES for w in c["expect"]}
-    assert "shop" in wanted and "stairs" in wanted and wanted & {"temple", "fountain"}
+    assert {"shop", "stairs", "death", "engraving"} <= wanted and wanted & {"temple", "fountain"}
 
 
 @pytest.mark.parametrize("spec", CASES, ids=[c["id"] for c in CASES])

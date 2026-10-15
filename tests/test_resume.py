@@ -167,6 +167,26 @@ def test_checkpoint_refused_inside_a_command(keys, tmp_path):
     assert EngineEnv().resume(tmp_path / "b.json").blstats[20] == o.blstats[20]
 
 
+def test_restore_after_the_game_ends():
+    """The window port outlives the game: a snapshot restored after the game
+    ended replays to the same end, field for field."""
+    env, o = boundary_env(keys=b"ssss")
+    snap = env.snapshot()
+    keys = list(b"ss") + list(b"#quit\ry") + [13] * 8
+    frames, ends = [], []
+    for attempt in range(2):
+        for k in keys:
+            o, done, _ = env.step(k)
+            frames.append((attempt, k, W.digests(o)))
+            if done:
+                ends.append(len([f for f in frames if f[0] == attempt]))
+                break
+        assert done, "the game did not end"
+        env.restore(snap)
+    first, second = [f[2] for f in frames if f[0] == 0], [f[2] for f in frames if f[0] == 1]
+    assert ends[0] == ends[1] and first == second
+
+
 def test_redo_after_resume(tmp_path):
     env, o = boundary_env(keys=b"ss3s")
     env.checkpoint(tmp_path / "ck.json")

@@ -931,13 +931,13 @@ class RawEngine:
         return self
 
     def save_mirror(self) -> bytes:
-        """The rl display mirror (glyph planes, inventory cache, last message) as one blob."""
+        """The rl display mirror (glyph planes, window table, inventory cache, last message) and the terminal screen as one blob."""
         buf = ctypes.create_string_buffer(int(self._lib.nle_mirror_blob_size()))
         self._lib.nle_mirror_save(self._ctx, buf)
         return buf.raw
 
     def load_mirror(self, blob: bytes) -> "RawEngine":
-        """Install a save_mirror() blob and refill the observation planes from it."""
+        """Install a save_mirror() blob and refill the observation (planes and screen) from it."""
         size = int(self._lib.nle_mirror_blob_size())
         if len(blob) != size:
             raise ValueError(f"mirror blob is {len(blob)} bytes, expected {size}")

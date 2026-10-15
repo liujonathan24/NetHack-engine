@@ -379,15 +379,17 @@ class EngineEnv:
     def checkpoint(self, path) -> None:
         """Write a resumable checkpoint = seed + character + tune + modify +
         level blob + player blob + the whole off-current dungeon-level file set
-        + the RNG blob + the display mirror.
+        + the RNG blob + the display mirror (with the terminal screen).
 
         The seed lets resume() reproduce object appearances/ids; the character
         and tune knobs let it reset the same game (role_init, the knobs the
         play code reads); the level and player blobs are the floor + hero; the
         RNG blob is both random streams, so play after resume() draws the same
         numbers as the straight game; the display mirror is the window port's
-        glyph planes and inventory cache, so the cells the resume render does
-        not draw (and the hallucinated inventory glyphs) match too.
+        glyph planes, window table and inventory cache plus the terminal
+        screen, so the cells the resume render does not draw, the rows the
+        straight game never redrew and the hallucinated inventory glyphs
+        match too.
 
         ``levelfiles`` is NOT optional.  ``save_player`` runs ``savegamestate``
         -> ``save_dungeon`` (dungeon.c:175), which serializes the entire
@@ -456,9 +458,9 @@ class EngineEnv:
         Raises :class:`CheckpointIntegrityError` if the resumed heap still
         references a level file that is not on disk.
 
-        Right after the return the message line is empty (the render does
-        not repeat the checkpoint's last message); every other field matches
-        the straight game, and every field does from the first key on.
+        Right after the return every field matches the straight game's
+        observation at the checkpoint, and every field does from the first
+        key on.
         """
         d = json.loads(pathlib.Path(path).read_text())
         core, disp = d["seed"]
@@ -486,7 +488,7 @@ class EngineEnv:
         if rng:  # after the render: it draws on the display stream
             self._engine.load_rng(base64.b64decode(rng))
         mirror = d.get("mirror")
-        if mirror:  # after the render: it redraws the planes
+        if mirror:  # after the render: it redraws the planes and the screen
             self._engine.load_mirror(base64.b64decode(mirror))
         self._engine.check_level_file_integrity("after resume")
         return self._engine.to_core_observation()
