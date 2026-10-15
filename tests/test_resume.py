@@ -16,7 +16,7 @@ import sys
 import numpy as np
 import pytest
 
-from nethack_core.engine_env import EngineEnv
+from nethack_core.engine_env import CheckpointAtPromptError, EngineEnv
 from tests import _resume_worker as W
 
 WORKER = pathlib.Path(W.__file__)
@@ -137,3 +137,88 @@ def test_old_format_checkpoint_still_resumes(tmp_path):
         assert W.status(o2)[k] == W.status(o)[k], k
     o3, done, _ = env2.step(ord("s"))
     assert not done and o3.blstats[20] == o.blstats[20] + 1
+
+
+def boundary_env(character="Val-hum-neu-fem", keys=b"ssss"):
+    env = EngineEnv()
+    env.reset(seeds=(42, 7), character=character)
+    o, _, _ = env.step(27)
+    for k in keys:
+        o, _, _ = env.step(k)
+    return env, o
+
+
+@pytest.mark.parametrize("keys", [b"2", b"20", b"F", b"m", b"_", b";", b"#", b"#pra"],
+                         ids=["count", "count2", "F", "m", "travel", "farlook", "extcmd", "extcmd_typed"])
+def test_checkpoint_refused_inside_a_command(keys, tmp_path):
+    """A key read that sets no prompt flag is not a command boundary either."""
+    env, o = boundary_env()
+    env.checkpoint(tmp_path / "a.json")
+    for k in keys:
+        o, _, _ = env.step(k)
+    assert not any(o.misc)
+    with pytest.raises(CheckpointAtPromptError, match="command is being read"):
+        env.checkpoint(tmp_path / "b.json")
+    for _ in range(3):
+        o, _, _ = env.step(27)
+        if env.engine.at_command_boundary:
+            break
+    env.checkpoint(tmp_path / "b.json")
+    assert EngineEnv().resume(tmp_path / "b.json").blstats[20] == o.blstats[20]
+
+
+def test_redo_after_resume(tmp_path):
+    env, o = boundary_env(keys=b"ss3s")
+    env.checkpoint(tmp_path / "ck.json")
+    env2 = EngineEnv()
+    env2.resume(tmp_path / "ck.json")
+    o1, _, _ = env.step(1)  # ^A repeats "3s"
+    o2, _, _ = env2.step(1)
+    assert o1.blstats[20] == o2.blstats[20] > o.blstats[20]
+    assert W.digests(o1) == W.digests(o2)
+
+
+def test_truncated_player_blob_is_refused(tmp_path):
+    env, o = boundary_env()
+    env.checkpoint(tmp_path / "ck.json")
+    d = json.loads((tmp_path / "ck.json").read_text())
+    blob = base64.b64decode(d["player"])
+    t = blob.rindex(b"NLEt")
+    for name, cut, rc in (("magic", t + 6, 9), ("struct", t + 60, 9), ("string", len(blob) - 3, 9),
+                          ("body", t - 500, 7)):
+        d["player"] = base64.b64encode(blob[:cut]).decode()
+        (tmp_path / f"{name}.json").write_text(json.dumps(d))
+        with pytest.raises(RuntimeError, match=f"rc={rc}"):
+            EngineEnv().resume(tmp_path / f"{name}.json")
+    o2, _, _ = env.step(ord("s"))  # the process and the straight game go on
+    assert o2.blstats[20] == o.blstats[20] + 1
+
+
+def test_warning_glyphs_after_resume(tmp_path):
+    """see_monsters() must run in the resumed process: a Wizard wearing a ring of
+    warning on Dlvl 8 sees warning glyphs move every turn."""
+    WARN = range(5589, 5595)  # GLYPH_WARNING_OFF .. + WARNCOUNT
+
+    def warned(o):
+        return bool(np.isin(np.asarray(o.glyphs), WARN).any())
+
+    env = EngineEnv()
+    env.reset(seeds=(23, 7), character="Wiz-hum-neu-mal", modify={"goto_depth": 8})
+    o, _, _ = env.step(27)
+    for k in [ord("P"), ord("e"), ord("r")]:  # the ring of warning, right hand
+        o, _, _ = env.step(k)
+    keys = W.walk(200, 2)
+    step = 0
+    while step < 100 or any(o.misc) or not env.engine.at_command_boundary:
+        o, done, _ = env.step(keys[step])
+        step += 1
+        assert not done
+    env.checkpoint(tmp_path / "ck.json")
+    straight = [(W.digests(o := env.step(k)[0]), warned(o)) for k in keys[step:]]
+    assert sum(w for _, w in straight) >= 50, "the straight run must show warning glyphs"
+    env2 = EngineEnv()
+    env2.resume(tmp_path / "ck.json")
+    for i, k in enumerate(keys[step:]):
+        o2, _, _ = env2.step(k)
+        bad = [f for f in W.FIELDS if f != "inv_glyphs" and W.digests(o2)[f] != straight[i][0][f]]
+        assert not bad, (i, bad)
