@@ -11,6 +11,23 @@ class EngineNotBuilt(RuntimeError):
     """Raised when libnethack.so cannot be located."""
 
 
+class CheckpointIntegrityError(RuntimeError):
+    """A restored/resumed game's heap disagrees with the level files on disk.
+
+    NetHack's ``goto_level`` (do.c:1451) branches on the in-memory flag
+    ``level_info[ledger].linfo_flags & LFILE_EXISTS``.  When that flag is set
+    and the on-disk ``<lock>.<ledger>`` file is missing, it calls
+    ``tricked_fileremoved`` (save.c:487), which prints ``Cannot open file ...``
+    / ``Probably someone removed it`` and then ``done(TRICKED)`` — an INSTANT
+    game-over at full HP that is indistinguishable downstream from a monster
+    kill.  Three E15 rollouts recorded exactly that as a death.
+
+    A corrupted checkpoint must never present as a death, so every path that
+    can produce this divergence raises instead.  Callers should let it
+    propagate: it means the checkpoint, not the hero, is broken.
+    """
+
+
 def _engine_build_dir() -> "Path | None":
     """Locate ``third_party/NetHack/src/build`` by walking up from this file.
 
@@ -151,6 +168,8 @@ class NleSeedsInit(ctypes.Structure):
 
 
 NLE_TUNE_MAX = 64
+# The game's clock, 2000-01-11 12:00:00 UTC: daytime, moon phase 2, not Friday the 13th.
+FIXED_TIME = 947592000
 
 
 class NleSettings(ctypes.Structure):
@@ -171,6 +190,7 @@ class NleSettings(ctypes.Structure):
         # writable game-state files live under hackdir — so no per-reset copy of
         # the ~3.7MB dat tree is needed. Empty => every prefix uses hackdir.
         ("datadir", ctypes.c_char * 256),
+        ("fixed_time", ctypes.c_long),
     ]
 
 
@@ -320,6 +340,29 @@ class RawEngine:
         lib.nle_fr_destroy.restype = None
         lib.nle_fr_destroy.argtypes = [ctypes.c_void_p]
 
+        # Level-file integrity (see CheckpointIntegrityError).  A snapshot also
+        # bundles the off-current dungeon levels that live on disk; these expose
+        # whether that bundle is complete and whether the live heap's
+        # LFILE_EXISTS flags still match the hackdir.
+        lib.nle_fr_last_restore_rc.restype = ctypes.c_int
+        lib.nle_fr_last_restore_rc.argtypes = []
+        lib.nle_fr_levelfile_count.restype = ctypes.c_int
+        lib.nle_fr_levelfile_count.argtypes = [ctypes.c_void_p]
+        lib.nle_fr_missing_levelfiles.restype = ctypes.c_int
+        lib.nle_fr_missing_levelfiles.argtypes = [ctypes.c_void_p]
+
+        # Portable level-file SET, for cross-process checkpoints.  The
+        # fast-reset handle itself is a live-process construct (coroutine stack
+        # + arena bytes + display mirror) and can never be written to disk.
+        lib.nle_fr_levelfiles_blob.restype = ctypes.c_void_p
+        lib.nle_fr_levelfiles_blob.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_long)
+        ]
+        lib.nle_fr_levelfiles_load.restype = ctypes.c_int
+        lib.nle_fr_levelfiles_load.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long
+        ]
+
         # Portable level blob save / load.  nle_save_level mallocs a blob (caller
         # frees via nle_free_blob).  nle_load_level is TWO-PHASE: it mutates state
         # but does not render — the caller must step once (ctrl-R) to redraw.
@@ -338,6 +381,21 @@ class RawEngine:
         lib.nle_save_player.restype = ctypes.c_void_p
         lib.nle_load_player.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
         lib.nle_load_player.restype = ctypes.c_int
+        # Both RNG streams (core + display) as one blob. These take no ctx:
+        # they read the one the last engine call on this thread anchored.
+        lib.nle_rng_blob_size.argtypes = []
+        lib.nle_rng_blob_size.restype = ctypes.c_size_t
+        lib.nle_rng_save.argtypes = [ctypes.c_void_p]
+        lib.nle_rng_save.restype = None
+        lib.nle_rng_load.argtypes = [ctypes.c_void_p]
+        lib.nle_rng_load.restype = None
+        # The rl display mirror (glyph planes, inventory cache, last message).
+        lib.nle_mirror_blob_size.argtypes = []
+        lib.nle_mirror_blob_size.restype = ctypes.c_size_t
+        lib.nle_mirror_save.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.nle_mirror_save.restype = None
+        lib.nle_mirror_load.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.nle_mirror_load.restype = None
 
         # Difficulty knob catalog.  nle_get_tune returns nle_tune_t*, which is a
         # flat block of doubles indexed by the name table — so get/set are fully
@@ -480,6 +538,7 @@ class RawEngine:
         settings.wizkit = b""
         settings.spawn_monsters = 1
         settings.ttyrecname = b""
+        settings.fixed_time = FIXED_TIME
 
         # Apply start-time difficulty-knob overrides (generation knobs must be
         # set before the starting level is built). tune_n == 0 => vanilla.
@@ -573,10 +632,17 @@ class RawEngine:
         """Capture the full live game state and return an opaque handle.
 
         The handle wraps a self-contained C-side copy of (ctx + coroutine stack
-        + arena + rl-port display mirror) taken at the moment of the call — not
-        merely the initial state.  It can be restored to return the engine to
-        this exact point, and the same handle can be restored repeatedly to
-        branch alternate action lines with byte-exact fidelity each time.
+        + arena + rl-port display mirror + EVERY on-disk dungeon-level file)
+        taken at the moment of the call — not merely the initial state.  It can
+        be restored to return the engine to this exact point, and the same
+        handle can be restored repeatedly to branch alternate action lines with
+        byte-exact fidelity each time.
+
+        The level-file bundle is all-or-nothing: if any level file cannot be
+        read, the whole snapshot fails rather than returning a partial bundle,
+        because a partial bundle restores a heap that believes in files that
+        are not on disk — which NetHack reports as a death, not an error
+        (see :class:`CheckpointIntegrityError`).
 
         The handle is bound to THIS RawEngine instance: restoring it into a
         different instance's ctx is undefined, so restore() rejects handles it
@@ -626,6 +692,91 @@ class RawEngine:
                 "a snapshot is bound to the ctx that created it"
             )
         self._lib.nle_fr_restore(self._ctx, handle)
+        # Level-file totality guard.  restore() rewrites every level file the
+        # snapshot bundled and deletes the stale ones, so the hackdir's level
+        # set becomes exactly the snapshot-time set.  A nonzero rc means a write
+        # or unlink failed, which leaves the (heap, disk) pair divergent — the
+        # exact state that turns the next stair transition into a done(TRICKED)
+        # fake death.  Fail loudly here rather than 40 turns later as a "death".
+        if self._lib.nle_fr_last_restore_rc() != 0:
+            raise CheckpointIntegrityError(
+                "restore() could not rewrite the snapshot's level files; the "
+                "restored game's dungeon is inconsistent with the hackdir"
+            )
+        return self
+
+    def snapshot_levelfile_count(self, handle) -> int:
+        """How many on-disk dungeon-level files ``handle`` bundled.
+
+        Zero after the game has made any level transition is the signature of
+        the pre-2026-08 lock-base bug (the bundler matched against ``s_lock``,
+        which ``set_levelfile_name`` had already rewritten to ``<base>.<lev>``,
+        so nothing ever matched).  Tests assert this is nonzero.
+        """
+        return int(self._lib.nle_fr_levelfile_count(handle))
+
+    def missing_level_files(self) -> int:
+        """Ledgers the live heap marks ``LFILE_EXISTS`` with no file on disk.
+
+        Each one is a latent ``done(TRICKED)`` waiting for the hero to use that
+        level's stairs.  Must be 0 for a healthy game; ``-1`` if the engine
+        could not compute it (no hackdir).
+        """
+        if self._ctx is None:
+            raise RuntimeError("missing_level_files() requires an active game")
+        return int(self._lib.nle_fr_missing_levelfiles(self._ctx))
+
+    def check_level_file_integrity(self, where: str = "") -> None:
+        """Raise :class:`CheckpointIntegrityError` if any level file is missing."""
+        n = self.missing_level_files()
+        if n > 0:
+            raise CheckpointIntegrityError(
+                f"{n} dungeon level(s) are flagged as existing but their level "
+                f"files are missing from {self._hackdir!r}"
+                + (f" ({where})" if where else "")
+                + "; the next stair transition would be reported as a death"
+            )
+
+    def save_levelfiles(self) -> bytes:
+        """Serialize the hackdir's whole dungeon-level-file set to a blob.
+
+        This is the part of a DISK checkpoint that ``snapshot()`` cannot give
+        you: the fast-reset handle is a live-process construct (coroutine stack
+        image + arena bytes + display mirror), whereas this is plain bytes.
+
+        It is mandatory for cross-process resume, not an optimization:
+        ``save_player()`` runs ``savegamestate`` -> ``save_dungeon``
+        (dungeon.c:175), which serializes the entire ``level_info[]`` array, so
+        the resumed heap believes in every level the original game visited.
+        Resuming into an empty hackdir without these files reproduces the
+        TRICKED fake death on the first stair transition.
+        """
+        if self._ctx is None:
+            raise RuntimeError("save_levelfiles() requires an active game")
+        n = ctypes.c_long(0)
+        ptr = self._lib.nle_fr_levelfiles_blob(self._ctx, ctypes.byref(n))
+        if not ptr or n.value <= 0:
+            raise RuntimeError("nle_fr_levelfiles_blob failed")
+        try:
+            return ctypes.string_at(ptr, n.value)
+        finally:
+            self._lib.nle_free_blob(ptr)
+
+    def load_levelfiles(self, blob: bytes) -> "RawEngine":
+        """Install a ``save_levelfiles()`` blob into this game's hackdir.
+
+        Writes every file in the blob and deletes any other level file present,
+        so the hackdir's level set becomes exactly the blob's.  Returns self.
+        """
+        if self._ctx is None:
+            raise RuntimeError("load_levelfiles() requires an active game")
+        buf = ctypes.create_string_buffer(blob, len(blob))
+        rc = self._lib.nle_fr_levelfiles_load(self._ctx, buf, len(blob))
+        if rc != 0:
+            raise CheckpointIntegrityError(
+                f"nle_fr_levelfiles_load failed (rc={rc}); the checkpoint's "
+                "dungeon level files could not be installed"
+            )
         return self
 
     def free_snapshot(self, handle) -> None:
@@ -762,6 +913,40 @@ class RawEngine:
     # ------------------------------------------------------------------
     # Secure state mutation (single field) + deferred dungeon-level jump
     # ------------------------------------------------------------------
+
+    def save_rng(self) -> bytes:
+        """Both RNG streams (core + display) of this game as one blob."""
+        self._anchor()
+        buf = ctypes.create_string_buffer(int(self._lib.nle_rng_blob_size()))
+        self._lib.nle_rng_save(buf)
+        return buf.raw
+
+    def load_rng(self, blob: bytes) -> "RawEngine":
+        """Install a save_rng() blob: the next random draw continues that stream."""
+        size = int(self._lib.nle_rng_blob_size())
+        if len(blob) != size:
+            raise ValueError(f"RNG blob is {len(blob)} bytes, expected {size}")
+        self._anchor()
+        self._lib.nle_rng_load(ctypes.create_string_buffer(blob, size))
+        return self
+
+    def save_mirror(self) -> bytes:
+        """The rl display mirror (glyph planes, window table, inventory cache, last message) and the terminal screen as one blob."""
+        buf = ctypes.create_string_buffer(int(self._lib.nle_mirror_blob_size()))
+        self._lib.nle_mirror_save(self._ctx, buf)
+        return buf.raw
+
+    def load_mirror(self, blob: bytes) -> "RawEngine":
+        """Install a save_mirror() blob and refill the observation (planes and screen) from it."""
+        size = int(self._lib.nle_mirror_blob_size())
+        if len(blob) != size:
+            raise ValueError(f"mirror blob is {len(blob)} bytes, expected {size}")
+        self._lib.nle_mirror_load(self._ctx, ctypes.create_string_buffer(blob, size))
+        return self
+
+    def _anchor(self) -> None:
+        # a read-only call that anchors this ctx on the thread (nle_rng_* have no ctx argument)
+        self._lib.nle_hero_on_stair(self._ctx)
 
     def set_state(self, field: str, value: int) -> "RawEngine":
         """Set a single whitelisted state field on the engine.  Returns self.
@@ -999,6 +1184,17 @@ class RawEngine:
     @property
     def message(self) -> np.ndarray:
         return self._message  # already (256,)
+
+    @property
+    def misc(self) -> np.ndarray:
+        """(in_yn_function, in_getlin, xwaitingforspace) of the last observation."""
+        return self._misc  # already (3,)
+
+    @property
+    def at_command_boundary(self) -> bool:
+        """True when the game waits for a command (parse()'s first key), not for
+        a count, prefix, cursor, ^A or extended-command key (internal[5])."""
+        return bool(self._internal[5])
 
     @property
     def done(self) -> bool:
