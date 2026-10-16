@@ -381,6 +381,21 @@ class RawEngine:
         lib.nle_save_player.restype = ctypes.c_void_p
         lib.nle_load_player.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
         lib.nle_load_player.restype = ctypes.c_int
+        # Both RNG streams (core + display) as one blob. These take no ctx:
+        # they read the one the last engine call on this thread anchored.
+        lib.nle_rng_blob_size.argtypes = []
+        lib.nle_rng_blob_size.restype = ctypes.c_size_t
+        lib.nle_rng_save.argtypes = [ctypes.c_void_p]
+        lib.nle_rng_save.restype = None
+        lib.nle_rng_load.argtypes = [ctypes.c_void_p]
+        lib.nle_rng_load.restype = None
+        # The rl display mirror (glyph planes, inventory cache, last message).
+        lib.nle_mirror_blob_size.argtypes = []
+        lib.nle_mirror_blob_size.restype = ctypes.c_size_t
+        lib.nle_mirror_save.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.nle_mirror_save.restype = None
+        lib.nle_mirror_load.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.nle_mirror_load.restype = None
 
         # Difficulty knob catalog.  nle_get_tune returns nle_tune_t*, which is a
         # flat block of doubles indexed by the name table — so get/set are fully
@@ -899,6 +914,40 @@ class RawEngine:
     # Secure state mutation (single field) + deferred dungeon-level jump
     # ------------------------------------------------------------------
 
+    def save_rng(self) -> bytes:
+        """Both RNG streams (core + display) of this game as one blob."""
+        self._anchor()
+        buf = ctypes.create_string_buffer(int(self._lib.nle_rng_blob_size()))
+        self._lib.nle_rng_save(buf)
+        return buf.raw
+
+    def load_rng(self, blob: bytes) -> "RawEngine":
+        """Install a save_rng() blob: the next random draw continues that stream."""
+        size = int(self._lib.nle_rng_blob_size())
+        if len(blob) != size:
+            raise ValueError(f"RNG blob is {len(blob)} bytes, expected {size}")
+        self._anchor()
+        self._lib.nle_rng_load(ctypes.create_string_buffer(blob, size))
+        return self
+
+    def save_mirror(self) -> bytes:
+        """The rl display mirror (glyph planes, window table, inventory cache, last message) and the terminal screen as one blob."""
+        buf = ctypes.create_string_buffer(int(self._lib.nle_mirror_blob_size()))
+        self._lib.nle_mirror_save(self._ctx, buf)
+        return buf.raw
+
+    def load_mirror(self, blob: bytes) -> "RawEngine":
+        """Install a save_mirror() blob and refill the observation (planes and screen) from it."""
+        size = int(self._lib.nle_mirror_blob_size())
+        if len(blob) != size:
+            raise ValueError(f"mirror blob is {len(blob)} bytes, expected {size}")
+        self._lib.nle_mirror_load(self._ctx, ctypes.create_string_buffer(blob, size))
+        return self
+
+    def _anchor(self) -> None:
+        # a read-only call that anchors this ctx on the thread (nle_rng_* have no ctx argument)
+        self._lib.nle_hero_on_stair(self._ctx)
+
     def set_state(self, field: str, value: int) -> "RawEngine":
         """Set a single whitelisted state field on the engine.  Returns self.
 
@@ -1135,6 +1184,17 @@ class RawEngine:
     @property
     def message(self) -> np.ndarray:
         return self._message  # already (256,)
+
+    @property
+    def misc(self) -> np.ndarray:
+        """(in_yn_function, in_getlin, xwaitingforspace) of the last observation."""
+        return self._misc  # already (3,)
+
+    @property
+    def at_command_boundary(self) -> bool:
+        """True when the game waits for a command (parse()'s first key), not for
+        a count, prefix, cursor, ^A or extended-command key (internal[5])."""
+        return bool(self._internal[5])
 
     @property
     def done(self) -> bool:
