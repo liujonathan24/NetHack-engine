@@ -34,6 +34,7 @@ import numpy as np
 
 from ._engine import (
     COLNO,
+    CheckpointIntegrityError,
     NLE_BLSTATS_SIZE,
     NLE_INVENTORY_SIZE,
     NLE_INVENTORY_STR_LENGTH,
@@ -44,6 +45,24 @@ from ._engine import (
     RawEngine,
 )
 from .env import CoreObservation, EpisodeMetadata
+
+__all__ = ["EngineEnv", "CheckpointAtPromptError", "CheckpointIntegrityError"]
+
+
+class CheckpointAtPromptError(RuntimeError):
+    """checkpoint() was called while a prompt is open, inside a command, or
+    after the game is over.
+
+    The blobs hold the game at a command boundary only: an open --More--,
+    menu, y/n or text prompt (and the helpless turns behind it), a count,
+    a prefix key, a cursor (travel, farlook) or an extended command being
+    typed is not in them, so such a checkpoint could not resume exactly.
+    """
+
+
+# misc plane index -> what is open (winrl.cc fill_obs)
+_PROMPTS = ((0, "y/n question (in_yn_function)"), (1, "text prompt (in_getlin)"),
+            (2, "--More-- or menu (xwaitingforspace)"))
 
 
 class _TuneProxy:
@@ -101,6 +120,11 @@ class EngineEnv:
         self._current_seeds: Optional[tuple[int, int]] = None
         #: Default modify config applied on every reset() (unless reset overrides).
         self._default_modify = dict(modify) if modify else None
+        #: What the running game was started with; checkpoint() writes them and
+        #: resume() resets with them.
+        self._character: Optional[str] = None
+        self._tune: Optional[dict] = None
+        self._modify: Optional[dict] = None
         #: ``env.tune.get()`` / ``env.tune.set(**knobs)`` difficulty-knob view.
         self.tune = _TuneProxy(self._engine)
 
@@ -147,6 +171,8 @@ class EngineEnv:
         self._engine.start(core, disp, tune=tune, character=character)
         self._current_seeds = self._pending_seeds
         self._pending_seeds = None
+        self._character = character
+        self._tune = dict(tune) if tune else None
         meta = EpisodeMetadata(
             seeds=self._current_seeds,
             seed_hash=_hash_seeds(*self._current_seeds),
@@ -154,6 +180,7 @@ class EngineEnv:
         )
         obs = self._engine.to_core_observation()
         effective_modify = modify if modify is not None else self._default_modify
+        self._modify = dict(effective_modify) if effective_modify else None
         if effective_modify:
             obs = self.modify(**effective_modify)
         return obs, meta
@@ -350,32 +377,131 @@ class EngineEnv:
         pathlib.Path(path).write_bytes(self._engine.save_player())
 
     def checkpoint(self, path) -> None:
-        """Write a resumable checkpoint = seed + level blob + player blob.
+        """Write a resumable checkpoint = seed + character + tune + modify +
+        level blob + player blob + the whole off-current dungeon-level file set
+        + the RNG blob + the display mirror (with the terminal screen).
 
-        The seed lets resume() reproduce object appearances/ids; the level and
-        player blobs are the floor + hero.
+        The seed lets resume() reproduce object appearances/ids; the character
+        and tune knobs let it reset the same game (role_init, the knobs the
+        play code reads); the level and player blobs are the floor + hero; the
+        RNG blob is both random streams, so play after resume() draws the same
+        numbers as the straight game; the display mirror is the window port's
+        glyph planes, window table and inventory cache plus the terminal
+        screen, so the cells the resume render does not draw, the rows the
+        straight game never redrew and the hallucinated inventory glyphs
+        match too.
+
+        ``levelfiles`` is NOT optional.  ``save_player`` runs ``savegamestate``
+        -> ``save_dungeon`` (dungeon.c:175), which serializes the entire
+        ``level_info[]`` array — so the resumed heap believes in every level the
+        original game had visited.  Resuming into a fresh, empty hackdir without
+        those files makes the first stair transition open a level file that is
+        not there, which NetHack turns into ``done(TRICKED)``: a full-HP
+        game-over that looks exactly like a monster kill downstream.  See
+        :class:`nethack_core._engine.CheckpointIntegrityError`.
+
+        Raises :class:`CheckpointAtPromptError` while a prompt is open (the
+        misc plane of the last observation), while a command is being read
+        (count, prefix, cursor, ^A, extended command: the engine's
+        command-boundary flag) or when the game is over.
         """
+        if self._engine.done:
+            raise CheckpointAtPromptError(
+                "checkpoint refused: the game is over; a checkpoint is possible "
+                "only at a command boundary")
+        misc = self._engine.misc
+        for i, what in _PROMPTS:
+            if misc[i]:
+                raise CheckpointAtPromptError(
+                    f"checkpoint refused: a {what} is open; a checkpoint is "
+                    "possible only at a command boundary")
+        if not self._engine.at_command_boundary:
+            raise CheckpointAtPromptError(
+                "checkpoint refused: a command is being read (a count, prefix, "
+                "cursor, ^A or extended-command key is pending); a checkpoint is "
+                "possible only at a command boundary")
         data = {
             "seed": list(self._current_seeds),
+            "character": self._character,
+            "tune": self._tune,
+            "modify": self._modify,
             "level": base64.b64encode(self._engine.save_level()).decode(),
             "player": base64.b64encode(self._engine.save_player()).decode(),
+            "levelfiles": base64.b64encode(self._engine.save_levelfiles()).decode(),
+            "rng": base64.b64encode(self._engine.save_rng()).decode(),
+            "mirror": base64.b64encode(self._engine.save_mirror()).decode(),
         }
         pathlib.Path(path).write_text(json.dumps(data))
 
     def resume(self, path) -> CoreObservation:
-        """Restore a checkpoint: reset to its seed (so object appearances/ids
-        match), install the level, then the hero, then render once.
+        """Restore a checkpoint: reset to its seed, character and tune knobs
+        (so object appearances/ids and the role match), install the dungeon's
+        level files, then the level, then the hero, then render once.
+
+        The checkpoint's ``modify`` is kept for the record only: the hero and
+        the dungeon come from the blobs, so no mutation is re-applied. A
+        checkpoint without the character/tune/rng keys resumes as before
+        (default character, vanilla knobs, a fresh random stream).
 
         Honors the hard ordering contract: load_level_raw before
         load_player_raw, then a single step(18) render.  Returns the obs.
+
+        The level FILES go in LAST, after both blobs and before the render.
+        They cannot go in first: ``nle_load_level`` stamps the level blob over
+        ``<lock>.<ledger_no(u.uz)>``, and at that point ``u.uz`` is still the
+        freshly-reset level 1 — so installing first means the level-1 file gets
+        overwritten with the checkpoint's floor, and returning to level 1 later
+        reads a file whose dlvl header says something else, which
+        ``getlev`` answers with ``trickery()`` -> ``done(TRICKED)``: another
+        full-HP fake death (restore.c:1171).
+
+        Raises :class:`CheckpointIntegrityError` if the resumed heap still
+        references a level file that is not on disk.
+
+        Right after the return every field matches the straight game's
+        observation at the checkpoint, and every field does from the first
+        key on.
         """
         d = json.loads(pathlib.Path(path).read_text())
         core, disp = d["seed"]
-        self.reset(seeds=(int(core), int(disp)))
+        self.reset(seeds=(int(core), int(disp)), tune=d.get("tune"),
+                   modify={}, character=d.get("character"))
+        self._modify = d.get("modify")
+        # Dismiss the fresh game's welcome --More-- BEFORE loading anything.
+        # Otherwise the single ctrl-R below is eaten by that prompt instead of
+        # running docrt(), and the returned observation keeps showing the
+        # reset's level-1 starting room while blstats describe the checkpoint's
+        # floor: a map/status mismatch that the old gold+depth smoke test could
+        # not see. ESC (not CR) because ESC is a no-op in command context.
+        # A full moon or Friday the 13th adds a --More-- of its own.
+        for _ in range(4):
+            self._engine.step(27)
+            if not self._engine.misc[2]:
+                break
         self._engine.load_level_raw(base64.b64decode(d["level"]))   # LEVEL first
         self._engine.load_player_raw(base64.b64decode(d["player"]))  # THEN player
+        lf = d.get("levelfiles")
+        if lf:  # ...and the off-current dungeon LAST (see above)
+            self._engine.load_levelfiles(base64.b64decode(lf))
         self._engine.step(18)  # single two-phase render after BOTH
+        rng = d.get("rng")
+        if rng:  # after the render: it draws on the display stream
+            self._engine.load_rng(base64.b64decode(rng))
+        mirror = d.get("mirror")
+        if mirror:  # after the render: it redraws the planes and the screen
+            self._engine.load_mirror(base64.b64decode(mirror))
+        self._engine.check_level_file_integrity("after resume")
         return self._engine.to_core_observation()
+
+    # ----- level-file integrity (see CheckpointIntegrityError) -----
+
+    def missing_level_files(self) -> int:
+        """Ledgers flagged ``LFILE_EXISTS`` whose level file is absent."""
+        return self._engine.missing_level_files()
+
+    def check_level_file_integrity(self, where: str = "") -> None:
+        """Raise ``CheckpointIntegrityError`` if any level file is missing."""
+        self._engine.check_level_file_integrity(where)
 
     # ----- difficulty knobs -----
 
@@ -395,6 +521,11 @@ class EngineEnv:
     @property
     def current_seeds(self) -> Optional[tuple[int, int]]:
         return self._current_seeds
+
+    @property
+    def character(self) -> Optional[str]:
+        """The character string the running game was started with (None = default)."""
+        return self._character
 
     @property
     def engine(self) -> RawEngine:
